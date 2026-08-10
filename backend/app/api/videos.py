@@ -11,6 +11,7 @@ from app.core.response import error_envelope, success_envelope
 from app.models.user import User
 from app.models.video import VideoAsset
 from app.schemas.video import VideoListResponse, VideoRead
+from app.services.video_metadata_service import UnreadableVideoError, extract_metadata
 from app.services.video_storage import (
     MP4_CONTENT_TYPE,
     MP4_EXTENSION,
@@ -41,6 +42,11 @@ def _to_video_read(video: VideoAsset, uploader_email: str) -> VideoRead:
         uploaded_by=video.uploaded_by,
         uploaded_by_email=uploader_email,
         created_at=video.created_at,
+        fps=video.fps,
+        duration_seconds=video.duration_seconds,
+        frame_count=video.frame_count,
+        width=video.width,
+        height=video.height,
     )
 
 
@@ -83,12 +89,32 @@ async def upload_video(
             ),
         )
 
+    # The magic-byte check only proves the file starts with a plausible MP4
+    # header — it doesn't prove OpenCV can actually decode it. Opening it for
+    # real is the only way to catch a file that's spoofed just well enough to
+    # pass the cheap check above but isn't a genuinely playable video.
+    try:
+        metadata = extract_metadata(destination)
+    except UnreadableVideoError:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=error_envelope(
+                "UNREADABLE_VIDEO", "The uploaded file could not be read as a valid video"
+            ),
+        )
+
     video = VideoAsset(
         original_filename=file.filename,
         storage_filename=storage_filename,
         file_size_bytes=file_size,
         mime_type=file.content_type,
         uploaded_by=current_user.id,
+        fps=metadata.fps,
+        duration_seconds=metadata.duration_seconds,
+        frame_count=metadata.frame_count,
+        width=metadata.width,
+        height=metadata.height,
     )
     db.add(video)
     db.commit()

@@ -1,8 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 from app.core.config import settings
 from app.models.video import VideoAsset
 from tests.conftest import VALID_MP4_FIXTURE
+from tests.fixtures.synthetic_video import (
+    DEFAULT_FPS,
+    DEFAULT_HEIGHT,
+    DEFAULT_NUM_FRAMES,
+    DEFAULT_WIDTH,
+)
 
 
 def _storage_files() -> list[Path]:
@@ -12,8 +20,8 @@ def _storage_files() -> list[Path]:
     return list(storage_dir.iterdir())
 
 
-def test_upload_valid_mp4(client, auth_headers, db_session):
-    fixture_bytes = VALID_MP4_FIXTURE.read_bytes()
+def test_upload_valid_mp4(client, auth_headers, db_session, synthetic_mp4_path):
+    fixture_bytes = synthetic_mp4_path.read_bytes()
 
     response = client.post(
         "/api/v1/videos",
@@ -31,6 +39,14 @@ def test_upload_valid_mp4(client, auth_headers, db_session):
     assert "storage_filename" not in data
     assert "storage_filename" not in str(body)
 
+    # Phase 5: real OpenCV-extracted metadata, matching the fixture's known
+    # generation parameters exactly.
+    assert data["fps"] == pytest.approx(DEFAULT_FPS)
+    assert data["frame_count"] == DEFAULT_NUM_FRAMES
+    assert data["width"] == DEFAULT_WIDTH
+    assert data["height"] == DEFAULT_HEIGHT
+    assert data["duration_seconds"] == pytest.approx(DEFAULT_NUM_FRAMES / DEFAULT_FPS)
+
     files_on_disk = _storage_files()
     assert len(files_on_disk) == 1
     assert files_on_disk[0].suffix == ".mp4"
@@ -41,6 +57,31 @@ def test_upload_valid_mp4(client, auth_headers, db_session):
     assert row.original_filename == "clip.mp4"
     assert row.file_size_bytes == len(fixture_bytes)
     assert row.storage_filename == files_on_disk[0].name
+    assert row.frame_count == DEFAULT_NUM_FRAMES
+
+
+def test_upload_old_phase3_fixture_now_rejected_as_unreadable(
+    client, auth_headers, db_session
+):
+    # Phase 5 deliberately tightens validation: Phase 3's original fixture
+    # has valid MP4 magic bytes (passes the cheap check) but is not a
+    # genuinely decodable video (no real moov/mdat data) — OpenCV correctly
+    # fails to open it. This is the intended, planned behavior change
+    # documented in Phase 5's spec, not a regression.
+    fixture_bytes = VALID_MP4_FIXTURE.read_bytes()
+
+    response = client.post(
+        "/api/v1/videos",
+        headers=auth_headers,
+        files={"file": ("clip.mp4", fixture_bytes, "video/mp4")},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "UNREADABLE_VIDEO"
+
+    assert _storage_files() == []
+    assert db_session.query(VideoAsset).count() == 0
 
 
 def test_upload_without_authorization_header(client):
@@ -107,8 +148,8 @@ def test_upload_missing_file_field_returns_envelope_shaped_422(client, auth_head
     assert "detail" not in body
 
 
-def test_list_videos_respects_limit_and_offset(client, auth_headers):
-    fixture_bytes = VALID_MP4_FIXTURE.read_bytes()
+def test_list_videos_respects_limit_and_offset(client, auth_headers, synthetic_mp4_path):
+    fixture_bytes = synthetic_mp4_path.read_bytes()
     for i in range(3):
         response = client.post(
             "/api/v1/videos",
@@ -134,8 +175,8 @@ def test_list_videos_respects_limit_and_offset(client, auth_headers):
     assert body["data"]["items"][0]["original_filename"] == "clip1.mp4"
 
 
-def test_get_video_by_id(client, auth_headers, test_user):
-    fixture_bytes = VALID_MP4_FIXTURE.read_bytes()
+def test_get_video_by_id(client, auth_headers, test_user, synthetic_mp4_path):
+    fixture_bytes = synthetic_mp4_path.read_bytes()
     upload = client.post(
         "/api/v1/videos",
         headers=auth_headers,

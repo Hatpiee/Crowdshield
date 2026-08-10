@@ -12,13 +12,27 @@ from app.core.security import hash_password
 from app.main import app
 from app.models.user import Role, User
 from app.models.video import VideoAsset
+from tests.fixtures.synthetic_video import (
+    DEFAULT_FPS,
+    DEFAULT_HEIGHT,
+    DEFAULT_NUM_FRAMES,
+    DEFAULT_WIDTH,
+    generate_synthetic_mp4,
+)
 
 # Path to a 1000-byte hand-crafted MP4 fixture: a 32-byte "ftyp" box (size
 # field 0x00000020, type "ftyp", major_brand "isom", minor_version 0x200,
 # compatible_brands "isomiso2avc1mp41") followed by 968 zero-byte padding.
 # validate_mp4_magic_bytes() only inspects offset 4-7 ("ftyp"), so the
 # padding content is arbitrary — it just gives the fixture a known,
-# non-trivial total size for file-size assertions in tests. See
+# non-trivial total size for file-size assertions in tests.
+#
+# IMPORTANT (Phase 5): this file has valid magic bytes but is NOT a
+# genuinely decodable video (no real frame data, just padding) — it is now
+# correctly rejected by the deeper OpenCV-based validation added in Phase 5.
+# It is kept around specifically to test that rejection path (see
+# test_upload_old_fixture_now_rejected_as_unreadable in test_videos.py); the
+# "valid upload" tests use `synthetic_mp4_path` below instead. See
 # backend/tests/fixtures/ for the file itself.
 VALID_MP4_FIXTURE = Path(__file__).parent / "fixtures" / "valid_minimal.mp4"
 
@@ -116,6 +130,15 @@ def make_video(db_session, test_user):
         return video
 
     return _make_video
+
+
+@pytest.fixture
+def synthetic_mp4_path(tmp_path) -> Path:
+    """A genuinely OpenCV-decodable MP4 generated fresh per test (10 frames,
+    64x64, 10fps) — see tests/fixtures/synthetic_video.py."""
+    path = tmp_path / "synthetic.mp4"
+    generate_synthetic_mp4(path)
+    return path
 
 
 @pytest.fixture

@@ -12,6 +12,11 @@ class VideoRead(BaseModel):
     uploaded_by: uuid.UUID
     uploaded_by_email: str
     created_at: datetime
+    fps: float | None = None
+    duration_seconds: float | None = None
+    frame_count: int | None = None
+    width: int | None = None
+    height: int | None = None
 
     model_config = {"from_attributes": True}
 

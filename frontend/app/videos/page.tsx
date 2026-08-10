@@ -9,6 +9,9 @@ interface VideoItem {
   mime_type: string;
   uploaded_by_email: string;
   created_at: string;
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
 }
 
 function formatBytes(bytes: number): string {
@@ -21,6 +24,13 @@ function formatBytes(bytes: number): string {
     unitIndex += 1;
   } while (value >= 1024 && unitIndex < units.length - 1);
   return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds: number): string {
+  const totalSeconds = Math.round(seconds);
+  const mm = Math.floor(totalSeconds / 60);
+  const ss = totalSeconds % 60;
+  return `${mm}:${ss.toString().padStart(2, "0")}`;
 }
 
 export default async function VideosPage() {
@@ -42,8 +52,17 @@ export default async function VideosPage() {
             <li key={video.id} className="py-2 text-sm">
               <div className="font-medium">{video.original_filename}</div>
               <div className="text-gray-500">
-                {formatBytes(video.file_size_bytes)} · {video.uploaded_by_email} ·{" "}
-                {new Date(video.created_at).toLocaleString()}
+                {formatBytes(video.file_size_bytes)}
+                {video.duration_seconds !== null && (
+                  <> · {formatDuration(video.duration_seconds)}</>
+                )}
+                {video.width !== null && video.height !== null && (
+                  <>
+                    {" "}
+                    · {video.width}×{video.height}
+                  </>
+                )}{" "}
+                · {video.uploaded_by_email} · {new Date(video.created_at).toLocaleString()}
               </div>
             </li>
           ))}
