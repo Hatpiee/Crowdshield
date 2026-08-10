@@ -60,3 +60,30 @@ CPU-first, modular, evidence-driven crowd intelligence and decision-support syst
 10. Expected result:
     - Frontend: http://localhost:3000
     - Backend health check: http://localhost:8000/health
+
+## Troubleshooting
+
+**`npm run dev` behaves unexpectedly after a previous session** — stale routes,
+unexpected 404s on endpoints you know exist, or port conflicts on 3000/8000.
+
+The most likely cause is an orphaned process from an earlier session: on
+Windows, stopping `npm run dev` (e.g. Ctrl+C, or a task runner killing the
+top-level process) doesn't always terminate the child processes it spawned
+(the uvicorn reloader/worker, the Turbopack dev server). Those can keep
+running in the background, still bound to ports 3000/8000, silently serving
+old code to anything that hits those ports.
+
+A `predev` script now runs automatically before every `npm run dev` and
+force-frees ports 3000 and 8000 first, so this shouldn't come up in normal
+use. If it still does (or you just want to clean up manually), from
+PowerShell:
+
+```powershell
+Get-Process python,node -ErrorAction SilentlyContinue
+Stop-Process -Name python,node -Force -ErrorAction SilentlyContinue
+```
+
+The first line shows what's currently running so you can sanity-check before
+killing anything; the second force-stops all `python.exe`/`node.exe`
+processes system-wide, not just this project's — close any other Node/Python
+work first if you have some running.
