@@ -1,3 +1,4 @@
+import uuid
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
 from app.models.user import Role, User
+from app.models.video import VideoAsset
 
 # Path to a 1000-byte hand-crafted MP4 fixture: a 32-byte "ftyp" box (size
 # field 0x00000020, type "ftyp", major_brand "isom", minor_version 0x200,
@@ -90,6 +92,30 @@ def _video_storage_tmp(tmp_path, monkeypatch):
     # any test exercising the video endpoints needs this, and it's a no-op
     # for tests that don't.
     monkeypatch.setattr(settings, "VIDEO_STORAGE_PATH", str(tmp_path / "videos"))
+
+
+@pytest.fixture
+def make_video(db_session, test_user):
+    def _make_video(
+        original_filename: str = "clip.mp4",
+        storage_filename: str | None = None,
+        file_size_bytes: int = 1000,
+        uploader: User | None = None,
+    ) -> VideoAsset:
+        uploaded_by = uploader.id if uploader else test_user[0].id
+        video = VideoAsset(
+            original_filename=original_filename,
+            storage_filename=storage_filename or f"{uuid.uuid4()}.mp4",
+            file_size_bytes=file_size_bytes,
+            mime_type="video/mp4",
+            uploaded_by=uploaded_by,
+        )
+        db_session.add(video)
+        db_session.commit()
+        db_session.refresh(video)
+        return video
+
+    return _make_video
 
 
 @pytest.fixture

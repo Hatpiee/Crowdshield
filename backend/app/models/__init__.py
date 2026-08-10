@@ -1,2 +1,5 @@
 from app.models.user import Role, User  # noqa: F401
 from app.models.video import VideoAsset  # noqa: F401
+from app.models.model_config import ModelConfig  # noqa: F401
+from app.models.analysis_session import AnalysisSession, SessionStatus  # noqa: F401
+from app.models.processing_run import ProcessingRun, ProcessingRunStatus  # noqa: F401
