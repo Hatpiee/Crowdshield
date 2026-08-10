@@ -2,10 +2,11 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo-root .env, resolved absolutely so settings load correctly regardless of
-# the process's current working directory (uvicorn, alembic, pytest, and
-# scripts/ are all invoked from different cwds).
-_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+# Resolved absolutely so paths derived from it are correct regardless of the
+# process's current working directory (uvicorn, alembic, pytest, and scripts/
+# are all invoked from different cwds).
+REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENV_FILE = REPO_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "changeme"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     VIDEO_STORAGE_PATH: str = "storage/videos"
+    MAX_UPLOAD_SIZE_MB: int = 2048
     LOG_LEVEL: str = "INFO"
     DETECTOR_MODEL: str = "yolov8n"
     DETECTOR_RUNTIME: str = "cpu"

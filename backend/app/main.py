@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
+from app.api.videos import router as videos_router
 from app.core.config import settings
-from app.core.response import success_envelope
+from app.core.response import error_envelope, success_envelope
 
 app = FastAPI()
 
@@ -25,7 +27,26 @@ async def http_exception_handler(request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content=exc.detail)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc: RequestValidationError):
+    # FastAPI's automatic request validation (e.g. a missing multipart file
+    # field) raises this before any route body runs, so it bypasses the
+    # HTTPException handler above and would otherwise leak FastAPI's default
+    # {"detail": [...]} shape instead of the project's envelope.
+    errors = exc.errors()
+    if errors:
+        loc = " -> ".join(str(part) for part in errors[0].get("loc", []))
+        message = f"{loc}: {errors[0].get('msg', 'Invalid request')}" if loc else errors[0].get("msg", "Invalid request")
+    else:
+        message = "Invalid request"
+    return JSONResponse(
+        status_code=422,
+        content=error_envelope("VALIDATION_ERROR", message),
+    )
+
+
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(videos_router, prefix="/api/v1")
 
 
 @app.get("/health")
