@@ -27,6 +27,32 @@ class Settings(BaseSettings):
     DETECTOR_MODEL: str = "yolo11n"
     DETECTOR_RUNTIME: str = "pytorch"
     DETECTOR_CONFIDENCE_THRESHOLD: float = 0.25
+    # Phase 7: how many of a track's most recent positions are retained in
+    # memory (bounded, to avoid unbounded growth over a long video).
+    TRACK_HISTORY_LENGTH: int = 30
+    # Phase 7: verified real constructor params of trackers.ByteTrackTracker
+    # (see backend/app/pipeline/bytetrack_adapter.py docstring for the full
+    # inspection notes). All other ByteTrackTracker params are left at their
+    # library defaults.
+    TRACKER_LOST_TRACK_BUFFER: int = 30
+    TRACKER_MINIMUM_CONSECUTIVE_FRAMES: int = 2
+    # Minimum detection confidence to CREATE a new track (distinct from
+    # DETECTOR_CONFIDENCE_THRESHOLD, which gates what counts as a detection
+    # at all). The library's own general-purpose default is 0.7, but
+    # real-footage testing found that most real-world detections from
+    # YOLO11nDetector (tuned to DETECTOR_CONFIDENCE_THRESHOLD=0.25 for
+    # recall) never clear 0.7, so almost nothing gets a confirmed track_id
+    # at that default on dense-crowd footage.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (same category as Phase 6's
+    # box-to-point collapse constants — not empirically tuned against real
+    # crowd footage, a candidate for recalibration during Sprint-0
+    # validation, §35, exactly like the master spec's own Crowd Pressure
+    # thresholds are documented as open for recalibration): 0.3, chosen to
+    # sit just above DETECTOR_CONFIDENCE_THRESHOLD's 0.25 floor so most
+    # real person detections have a realistic chance of being confirmed as
+    # tracks. Logged in DECISIONS.md.
+    TRACKER_TRACK_ACTIVATION_THRESHOLD: float = 0.3
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
