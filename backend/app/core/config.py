@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # downstream consumers. Same unvalidated-engineering-judgment status as
     # DIS_PRESET above — logged in DECISIONS.md.
     MOTION_MAGNITUDE_NOISE_FLOOR: float = 0.5
+    # Phase 9: pixels per square grid cell edge for the shared spatial grid
+    # that Density and Flow are both computed on (so Crowd Pressure can
+    # combine them pointwise without interpolation). Grid rows/cols are
+    # derived from frame width/height divided by this value.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (same category as DIS_PRESET and
+    # MOTION_MAGNITUDE_NOISE_FLOOR above — logged in DECISIONS.md): 40,
+    # not calibrated against any real venue's physical scale (no camera
+    # calibration exists in this project — see DECISIONS.md's "Known
+    # Structural Limitation: Pixel-Space vs. Real-World Units" section).
+    CROWD_GRID_CELL_SIZE_PX: int = 40
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
