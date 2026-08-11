@@ -18,8 +18,15 @@ class Settings(BaseSettings):
     VIDEO_STORAGE_PATH: str = "storage/videos"
     MAX_UPLOAD_SIZE_MB: int = 2048
     LOG_LEVEL: str = "INFO"
-    DETECTOR_MODEL: str = "yolov8n"
-    DETECTOR_RUNTIME: str = "cpu"
+    # Phase 6: corrected from the Phase 1 placeholder values ("yolov8n" /
+    # "cpu") to reflect the frozen decisions actually built — YOLO11n is the
+    # frozen detector (master spec §5/§9/§12/§40), and DETECTOR_RUNTIME now
+    # means "which inference backend" (pytorch today; openvino deferred to
+    # roadmap Phase 23), not "which device" — CPU is forced unconditionally
+    # in YOLO11nDetector regardless of this setting.
+    DETECTOR_MODEL: str = "yolo11n"
+    DETECTOR_RUNTIME: str = "pytorch"
+    DETECTOR_CONFIDENCE_THRESHOLD: float = 0.25
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
