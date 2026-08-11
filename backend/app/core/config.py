@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     # real person detections have a realistic chance of being confirmed as
     # tracks. Logged in DECISIONS.md.
     TRACKER_TRACK_ACTIVATION_THRESHOLD: float = 0.3
+    # Phase 8: which cv2.DISOpticalFlow_create preset to use — "ultrafast",
+    # "fast", or "medium" (mapped to the real verified
+    # cv2.DISOPTICAL_FLOW_PRESET_* constants in dis_optical_flow.py).
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (same category as the box-to-point
+    # constants and TRACKER_TRACK_ACTIVATION_THRESHOLD above — logged in
+    # DECISIONS.md): "fast", chosen as a balance between quality and CPU
+    # cost per §5's own "~21-48 FPS depending on preset" citation. No
+    # benchmark has been run on this project's target hardware yet —
+    # candidate for Sprint-0 recalibration.
+    DIS_PRESET: str = "fast"
+    # Phase 8: flow-magnitude floor (pixels) below which a pixel is excluded
+    # from this phase's whole-frame summary statistics (mean_velocity,
+    # velocity_variance, dominant_direction_degrees, directional_entropy) —
+    # NEVER applied to the raw flow_field itself, which stays unfiltered for
+    # downstream consumers. Same unvalidated-engineering-judgment status as
+    # DIS_PRESET above — logged in DECISIONS.md.
+    MOTION_MAGNITUDE_NOISE_FLOOR: float = 0.5
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
