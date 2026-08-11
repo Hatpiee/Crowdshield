@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolved absolutely so paths derived from it are correct regardless of the
@@ -156,6 +157,54 @@ class Settings(BaseSettings):
     # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 6, the
     # spec's own suggested default.
     REVERSE_FLOW_PERSISTENCE_MIN_COUNT: int = 6
+    # Phase 11 (Risk Score, decision #1): reference max_pressure (pixel-space
+    # "people * pixels^2/second^2 per cell", per Phase 9's units disclosure)
+    # at which the pressure sub-score saturates at 100. Worst-case-sensitive
+    # by design (uses max_pressure, not mean) — a single crushing cell
+    # matters even surrounded by calm ones.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 100.0,
+    # informed by real observed max_pressure values from Phase 9's preview
+    # script re-run against people_clip.mp4 (149 frame-pairs): p25=2.58,
+    # median=14.89, p75=41.0, p90=73.4, p95=89.5, max=262.8. 100 sits just
+    # above the real p95, so only the top ~5% of observed frames (and any
+    # future footage with genuinely worse local crushing) saturate the
+    # pressure sub-score at 100 — not calibrated against any real venue.
+    PRESSURE_SCORE_REFERENCE_PX: float = 100.0
+    # Phase 11 (Risk Score, decision #5): weighted-average weights combining
+    # the four sub-scores into risk_score. MUST sum to 1.0 (validated below
+    # at settings load time) — when a sub-score is unavailable (only
+    # Bottleneck can be, per Phase 10), its weight is proportionally
+    # redistributed among the others at RUNTIME (see risk_score.py's
+    # _redistribute_weights), not by editing these configured values.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): Pressure
+    # gets the largest share (0.5) per §12's own framing of Crowd Pressure as
+    # "the single most heavily validated decision in the entire project";
+    # the other three split the remainder, with Congestion and Bottleneck
+    # weighted equally (0.2 each) and Reverse Flow smallest (0.1) since it's
+    # the least-validated mechanism (see DECISIONS.md's "Reverse Flow
+    # Mechanism Not Validated for Crowds"). Not empirically tuned.
+    RISK_SCORE_WEIGHT_PRESSURE: float = 0.5
+    RISK_SCORE_WEIGHT_CONGESTION: float = 0.2
+    RISK_SCORE_WEIGHT_BOTTLENECK: float = 0.2
+    RISK_SCORE_WEIGHT_REVERSE_FLOW: float = 0.1
+    # Phase 11 (Predictive Projection, decision #7): rolling TIME window (not
+    # frame count) of recent (timestamp, mean_pressure) pairs used to fit the
+    # linear trend.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 10.0
+    # seconds, the spec's own suggested default.
+    PREDICTIVE_WINDOW_SECONDS: float = 10.0
+    # Phase 11 (Predictive Projection, decision #7): how far forward (real
+    # seconds) to extrapolate the linear trend. DELIBERATELY NOT the problem
+    # statement's "10 minutes before" figure — see predictive_projection.py's
+    # module docstring and DECISIONS.md for why conflating the two would be
+    # statistically indefensible.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30.0
+    # seconds, the spec's own suggested default.
+    PREDICTION_HORIZON_SECONDS: float = 30.0
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
@@ -166,6 +215,22 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
+
+    @model_validator(mode="after")
+    def _validate_risk_score_weights_sum_to_one(self) -> "Settings":
+        total = (
+            self.RISK_SCORE_WEIGHT_PRESSURE
+            + self.RISK_SCORE_WEIGHT_CONGESTION
+            + self.RISK_SCORE_WEIGHT_BOTTLENECK
+            + self.RISK_SCORE_WEIGHT_REVERSE_FLOW
+        )
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                "RISK_SCORE_WEIGHT_PRESSURE + RISK_SCORE_WEIGHT_CONGESTION + "
+                "RISK_SCORE_WEIGHT_BOTTLENECK + RISK_SCORE_WEIGHT_REVERSE_FLOW "
+                f"must sum to 1.0, got {total}"
+            )
+        return self
 
 
 settings = Settings()

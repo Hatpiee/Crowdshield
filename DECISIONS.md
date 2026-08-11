@@ -21,6 +21,9 @@ to as similar judgment calls come up in future phases.
 | `DENSITY_CONGESTION_THRESHOLD` / `FLOW_MAGNITUDE_CONGESTION_THRESHOLD_PX_PER_SEC` — `backend/app/core/config.py` | 10 | `0.1` people/cell, `40.0` px/s | Congestion requires density AND low flow magnitude, combined (frozen decision — density alone never triggers it). Informed by REAL observed values: re-running Phase 9's own preview script against `people_clip.mp4` (149 frame-pairs) plus a one-off probe of per-cell speed found occupied-cell (density > 0.01) density had p90=0.108 and stable, non-degraded multi-track frames typically peaked max_density ~0.11-0.18; occupied-cell speed had p25=28.0 px/s and whole-grid speed had p25=37.6 px/s. 0.1 and 40.0 sit just at/above these real percentiles. | Not empirically validated — informed by real observed distributions on ONE video, not tuned against labeled ground-truth "this was actually a congested queue" events. PIXEL-SPACE-native, same units limitation as Phase 9's own thresholds (see "Known Structural Limitation" below). Candidate for Sprint-0 validation (§35) recalibration. |
 | `BOTTLENECK_WINDOW_FRAMES` — `backend/app/core/config.py` | 10 | `30` frames (~1s at `people_clip.mp4`'s 30fps) | Rolling window length for Bottleneck's tracer-advection convergence measurement — the spec's own suggested starting point (`~30`). No sensitivity analysis performed on how window length affects the convergence ratio's reliability. | Not empirically validated. A shorter window reacts faster but is noisier; a longer window is smoother but lets tracers drift further, compounding forward-Euler integration error (see "Known Design Tradeoff: Bottleneck's Simplified Lagrangian Method" below). Candidate for Sprint-0 validation (§35) recalibration. |
 | Reverse Flow constants (`REVERSE_FLOW_BASELINE_EMA_ALPHA=0.1`, `REVERSE_FLOW_MIN_BASELINE_OBSERVATIONS=15`, `REVERSE_FLOW_DEVIATION_THRESHOLD_DEGREES=120`, `REVERSE_FLOW_PERSISTENCE_WINDOW_FRAMES=10`, `REVERSE_FLOW_PERSISTENCE_MIN_COUNT=6`) — `backend/app/core/config.py` / `backend/app/pipeline/reverse_flow.py` | 10 | See values above | All five are the spec's own suggested defaults, not independently derived. Unlike Congestion's two thresholds, NONE of these five are pixel-space quantities — EMA alpha is a learning rate, the two frame/observation counts are plain integers, and the deviation threshold is an ANGLE (degrees) — so the Phase 9/Congestion pixel-space units disclosure does NOT apply to any of them. | Not empirically validated on real crowd footage. On `people_clip.mp4` (sparse, low-density) reverse flow was observed only briefly and marginally (frames 95-101, 1-3 of 252 cells flagged, fraction 0.004-0.012 — see the preview script's real run output) — too weak a signal to validate or invalidate these defaults either way. See "Known Design Tradeoff: Reverse Flow Mechanism Not Validated for Crowds" below. |
+| `PRESSURE_SCORE_REFERENCE_PX` — `backend/app/core/config.py` | 11 | `100.0` (pixel-space, "people * pixels^2/second^2 per cell") | Risk Score's pressure sub-score is `min(100, max_pressure / PRESSURE_SCORE_REFERENCE_PX * 100)` — worst-case-sensitive by design (uses `max_pressure`, not `mean_pressure`; see "Known Design Choice: Pressure Uses max, Projection Uses mean" below). Informed by REAL observed values: re-running Phase 9's preview script against `people_clip.mp4` (149 frame-pairs) found `max_pressure` p25=2.58, median=14.89, p75=41.0, p90=73.4, p95=89.5, max=262.8. 100.0 sits just above the real p95, so only the top ~5% of observed frames (plus any footage with genuinely worse local crushing) saturate the sub-score at 100. | Not empirically validated — informed by real observed distribution on ONE sparse video, not tuned against labeled ground-truth crush events. PIXEL-SPACE-native, same units limitation as Phase 9/10's own thresholds. Candidate for Sprint-0 validation (§35) recalibration. |
+| `RISK_SCORE_WEIGHT_PRESSURE=0.5` / `RISK_SCORE_WEIGHT_CONGESTION=0.2` / `RISK_SCORE_WEIGHT_BOTTLENECK=0.2` / `RISK_SCORE_WEIGHT_REVERSE_FLOW=0.1` — `backend/app/core/config.py` | 11 | See values above (validated to sum to 1.0 at settings load time) | Pressure gets the largest weight per §12's own framing as "the single most heavily validated decision in the entire project"; Congestion and Bottleneck are weighted equally as secondary signals; Reverse Flow gets the smallest weight as the least-validated mechanism (adapted from vehicle wrong-way-detection literature, explicitly flagged by the spec itself as needing pedestrian-domain validation). When a sub-score is unavailable (only Bottleneck can be), its weight is redistributed proportionally at runtime among the available sub-scores (`risk_score.py`'s `_redistribute_weights`) — these four configured values are never edited per-frame to simulate that. | Not empirically validated — no labeled "this frame was genuinely high-risk" ground truth exists yet to tune against. The 0.5/0.2/0.2/0.1 split itself, not just the individual numbers, is an engineering judgment call (see risk_score.py's Design Rationale docstring). Candidate for Sprint-0 validation (§35) recalibration. |
+| `PREDICTIVE_WINDOW_SECONDS=10.0` / `PREDICTION_HORIZON_SECONDS=30.0` — `backend/app/core/config.py` | 11 | `10.0` / `30.0` seconds | Both are the spec's own suggested defaults for the lightweight linear-regression Crowd Pressure projection (`predictive_projection.py`). Time-based (not frame-count-based), so behavior is consistent across videos with different fps. | Not empirically validated. **Explicitly NOT the problem statement's "10 minutes before" figure** — see the dedicated "Known Design Tradeoff: Prediction Horizon vs. the Problem Statement's '10 Minutes Before'" section below for the full clarification; conflating the two would be statistically indefensible and is deliberately avoided everywhere in this phase's code, comments, and this log. Candidate for Sprint-0 validation (§35) recalibration of the window/horizon lengths themselves (not of the underlying clarification, which is a structural point, not a tunable). |
 
 ## Implementation-Discovered Constraints
 
@@ -33,6 +36,7 @@ respect.
 | Constraint | Discovered In | Detail | Practical Implication |
 |---|---|---|---|
 | `ByteTrackAdapter` / `trackers.ByteTrackTracker` enforces strict timestamp monotonicity | Phase 8→9 bridging check — two-pass memory investigation (`scripts/preview_full_pipeline.py`) | The underlying library silently no-ops any `update()` call whose `timestamp` is earlier than one it has already seen on that instance. Confirmed empirically, not assumed: re-running the same 300-frame span through the SAME tracker instance a second time triggered exactly 300 `UserWarning: ... timestamp X is earlier than the previous timestamp ... Skipping update` warnings — one per frame — with the tracker doing essentially nothing (no real association, no state update) for the entire second pass, even though the frames themselves were valid and detection/optical-flow processed them normally. | A single `Tracker` instance must process exactly ONE continuous, monotonically-increasing pass through one video, start to finish — it must never be restarted, replayed, or fed frames out of temporal order. This is in addition to (not a replacement for) Phase 7's existing "never reuse a Tracker instance across two different videos" rule. The not-yet-built AnalysisOrchestrator (§28) must construct a fresh `ByteTrackAdapter` per video/session and must never re-feed it a session that could produce a non-increasing `timestamp_seconds` sequence — e.g. a naive retry/replay path that just calls `update()` again from frame 0 would silently produce near-empty tracking output with no hard error. |
+| **[FIXED]** `PressureProjector`'s TIME-based rolling window did NOT gracefully handle a non-monotonic/reset timestamp sequence — unlike `ByteTrackAdapter`, it did not no-op, it silently over-retained | Discovered: Phase 11→12 bridging check — two-pass replay run (`scripts/preview_full_crowd_intelligence_bridging.py`). Fixed: immediate bug-fix follow-up task (`predictive_projection.py`, `PressureProjector.update()`). | ORIGINAL DEFECT: `update()`'s prune step (`cutoff = latest_timestamp - PREDICTIVE_WINDOW_SECONDS`, keep only entries with `t >= cutoff`) assumed `latest_timestamp` only ever increases. Confirmed empirically on a 600-frame two-pass replay of the same video through the SAME `PressureProjector` instance: Pass 1's `data_points_used` stayed correctly bounded (max 301, matching `PREDICTIVE_WINDOW_SECONDS=10.0s` @ 30fps). At the start of Pass 2, `latest_timestamp` dropped back to ~0s (the replayed video's own timestamps restart from 0) while the window still held Pass 1's tail entries (timestamps ~10-20s) — the resulting `cutoff` became negative, so nothing got pruned, and the window ballooned to `data_points_used=602` by the end of Pass 2. NOT a genuine memory leak in absolute terms (small `(float, float)` tuples, a few KB even at 2x size) and NOT visible under RSS measurement — a CORRECTNESS defect in the window-bound invariant, not a memory-safety one. THE FIX: `update()` now compares each new `pressure.timestamp_seconds` against the window's current latest entry BEFORE appending anything; if the new timestamp is `<=` the latest one already held, the update is REJECTED — logged via `logger.warning` (this module's own `logging.getLogger(__name__)`, matching the codebase's existing convention in `app/api/auth.py`, since there is no `warnings.warn` convention of this project's own to mirror — the ByteTrackAdapter warning the task referenced comes from the third-party `trackers` library, not from this codebase), the existing window is left completely untouched, and the rejection is made OBSERVABLE via a new `PressureProjector.last_update_rejected: bool` attribute (never just logged-and-forgotten, per this project's "never fail silently" principle) — `update()` also returns `None` for a rejected call, same as its existing "not enough data yet" case, but the two are now distinguishable via `last_update_rejected`. RE-VERIFIED after the fix: re-running the same 600-frame two-pass bridging script now shows Pass 2 emitting exactly 599 rejection warnings (one per frame, since every Pass-2 timestamp is `<=` Pass 1's final timestamp under full-video replay) and `projection_available_count=0` for Pass 2 — `data_points_used` never exceeds Pass 1's correctly-bounded max of 301 anywhere in the run. | Now mirrors `ByteTrackAdapter`'s FAILURE MODE, not just its underlying constraint: a `PressureProjector` instance, like a `Tracker` instance, must be fed exactly ONE continuous, monotonically-increasing pass through one video — but a violation is now safely rejected (loud warning + observable flag + untouched state) rather than silently corrupting the window's time-bound invariant. The not-yet-built AnalysisOrchestrator (§28) must still apply the "exactly one fresh instance per video/session, never replayed" discipline (this fix is a safety net against MISUSE, not a license to replay), but a misuse bug in that future orchestration code would now be caught via `last_update_rejected` and the warning log instead of manifesting as silent over-retention. Regression-tested in `test_predictive_projection.py` (`test_non_monotonic_timestamp_is_rejected_not_silently_absorbed`, `test_monotonic_operation_completely_unaffected_by_rejection_guard`). |
 
 ## Known Structural Limitation: Pixel-Space vs. Real-World Units
 
@@ -171,3 +175,95 @@ too weak and too brief a signal on this one video to serve as either
 validation or invalidation of the mechanism's real-world usefulness for
 crowds. Candidate for real pedestrian-domain validation once labeled
 "genuine wrong-way flow" footage is available (Sprint-0/pilot, §35/§39).
+
+## Known Design Choice: Risk Score's Combination Scheme Is Engineering Judgment, Not Spec-Derived
+
+**Phase 11** (`risk_score.py`). The master spec gives an exact formula for
+Crowd Pressure (§12) but does NOT specify how to combine Pressure with
+Congestion/Bottleneck/Reverse Flow (Phase 10) into a single 0-100 Risk
+Score. The whole combination scheme — per-signal 0-100 sub-scores,
+weighted-average combination, Pressure weighted largest, proportional
+weight redistribution on missing data, confidence propagated (not
+invented) from `DensityField.estimation_confidence` — is a documented
+engineering judgment call, not something derived from the master spec's
+own formulas. Every numeric input to this scheme (`PRESSURE_SCORE_
+REFERENCE_PX`, the four `RISK_SCORE_WEIGHT_*` values) is logged
+individually in the table above; this entry exists to flag the SCHEME
+itself (the choice to do a weighted average of independently-normalized
+sub-scores at all, rather than e.g. a max, a product, or a learned model)
+as also unvalidated, separately from its individual constants.
+
+**Confidence vs. completeness, applied one layer earlier than the spec
+describes it.** `RiskScoreResult.contributing_signals` records which of
+the four sub-scores actually fed into a given frame's score. This is the
+same distinction the master spec draws explicitly at §16's Evidence
+Package (confidence = "how much do we trust the numbers we have" vs.
+completeness = "how much of the full picture do we have at all") — applied
+here one pipeline layer earlier than the spec explicitly describes it,
+at the level of an individual frame's risk score rather than a full
+Evidence Package. `confidence` and `contributing_signals` are deliberately
+two separate fields for exactly this reason: a frame can have full
+confidence (clean density estimation) while missing a signal
+(Bottleneck's window still filling), or vice versa.
+
+## Known Design Choice: Pressure Sub-Score Uses max_pressure, Projection Uses mean_pressure
+
+**Phase 11** (`risk_score.py` vs. `predictive_projection.py`). These two
+modules deliberately use DIFFERENT Crowd Pressure summary statistics from
+the same underlying `CrowdPressureField` — this is intentional, not an
+inconsistency:
+- `risk_score.py`'s pressure sub-score uses **`max_pressure`**: a single
+  frame's risk snapshot should be worst-case-sensitive, since one small
+  area beginning to crush matters even if every other area is calm (this
+  matches the problem statement's own framing of crush risk as a
+  localized, not average, phenomenon).
+- `predictive_projection.py`'s trend fit uses **`mean_pressure`**: a
+  per-cell MAXIMUM is likely to be noisier/jumpier frame-to-frame (the
+  identity of "the worst cell" can shift from one frame to the next),
+  which would make a linear trend fit unstable. `mean_pressure`'s
+  frame-to-frame trajectory is smoother and better suited to a lightweight
+  linear-regression extrapolation.
+
+Both choices are documented explicitly in each module's own docstring so
+neither looks like an accidental oversight of the other.
+
+## Known Design Tradeoff: Prediction Horizon vs. the Problem Statement's "10 Minutes Before"
+
+**Phase 11** (`predictive_projection.py`). The problem statement's
+aspiration is to answer "is there a risk of crowd crush within the next
+few minutes" — commonly stated elsewhere in this project's source
+material as roughly "10 minutes before." `PREDICTION_HORIZON_SECONDS`
+defaults to 30 seconds, extrapolated from a `PREDICTIVE_WINDOW_SECONDS`-
+wide (default 10 seconds) rolling window of recent mean_pressure data.
+These numbers are DELIBERATELY NOT an attempt at the "10 minutes"
+figure — confidently linear-extrapolating 10 minutes forward from a
+10-second window of noisy real-world pressure data would be statistically
+indefensible, and neither the code nor its docstrings nor this log make
+that claim anywhere.
+
+The spec's "10 minutes before" is understood in this project as a
+SYSTEM-LEVEL goal, achieved through SUSTAINED trend detection and
+risk-state persistence over time — watching this lightweight projection
+(and the Risk Score, and other signals) evolve across MANY frames and
+MANY windows, which is explicitly the not-yet-built Risk State + Trigger
+Engine's job, not a literal guarantee this single-window, single-call
+linear fit makes on its own. This distinction is logged here specifically
+so a future reader does not mistake `PREDICTION_HORIZON_SECONDS=30` for a
+failed or scaled-down attempt at "10 minutes" — it was never attempting
+that in the first place.
+
+## Milestone: CrowdMetrics Now Fulfills the Full §28 Contract
+
+**Phase 11** (`crowd_metrics.py`). Phases 9 and 10 both explicitly
+documented `CrowdMetrics` as a deliberate SUBSET of the full §28
+`CrowdIntelligence.analyze(tracking, motion, temporal_state) ->
+CrowdMetrics` contract, each time naming what was still missing
+(`risk_score`, a propagated `confidence`). As of this phase, both exist
+(`RiskScoreResult.risk_score`/`.confidence` on the bundle, plus
+`predictive_projection`) — `CrowdMetrics` now fulfills the full §28 data
+contract. What remains explicitly OUT of scope is not part of that data
+contract at all: the Risk State + Trigger Engine that CONSUMES this
+contract to classify NORMAL/ELEVATED/CRITICAL/INCIDENT with hysteresis,
+and the mandatory 5-heatmap-type VISUALIZATION system — both later,
+separate phases that read this data, neither one an addition to the
+`CrowdMetrics` dataclass itself.
