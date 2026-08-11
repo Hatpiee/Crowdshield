@@ -17,6 +17,10 @@ to as similar judgment calls come up in future phases.
 | `MOTION_MAGNITUDE_NOISE_FLOOR` default — `backend/app/core/config.py` | 8 | `0.5` (pixels) | Dense optical flow on low-texture/static regions produces small, essentially meaningless vectors from compression noise and lighting changes; pixels below this floor are excluded from this phase's whole-frame summary statistics only (never from the raw flow field itself). | Not empirically validated against real footage — a reasonable-sounding round number, not a measured threshold. Candidate for Sprint-0 validation (§35) recalibration. |
 | `CROWD_GRID_CELL_SIZE_PX` default — `backend/app/core/config.py` | 9 | `40` (pixels per square cell edge) | The shared spatial grid Density and Flow are both computed on (so Crowd Pressure can combine them pointwise without interpolation) needs some cell size; 40px is a reasonable-looking round number for typical crowd-camera framing, nothing more. | Not calibrated against any real venue's physical scale — this project has no camera calibration (see "Known Structural Limitation" section below), so there is no principled way to relate 40px to a real distance yet. Candidate for Sprint-0 validation (§35) recalibration. |
 | Density confidence-rule constants (`MIN_POINTS_FOR_RELIABLE_ESTIMATION=3`, `TOO_FEW_POINTS_CONFIDENCE=0.4`, `VORONOI_UNAVAILABLE_CONFIDENCE=0.85`, `HIGH_DISAGREEMENT_THRESHOLD=0.75`, `HIGH_DISAGREEMENT_CONFIDENCE=0.5`) — `backend/app/pipeline/density.py` | 9 | See values above | A simple, threshold-based rule (per decision #6's explicit instruction to keep this simple, not an elaborate model) mapping KDE/Voronoi failure modes and disagreement magnitude to a confidence value. | Not empirically validated. Worth flagging with real evidence: on real footage (`people_clip.mp4`, 149 frame-pairs), `high_voronoi_disagreement` fired on ~34% of frames and `too_few_points` on ~21% (both mostly during low-track-count spans of 2-7 people) — i.e. `estimation_confidence` was below 1.0 more often than not on this footage (mean 0.703 across the run). This isn't necessarily wrong (small-N density estimation genuinely IS less reliable, which is exactly what this mechanism is meant to signal), but `HIGH_DISAGREEMENT_THRESHOLD=0.75` in particular was picked without empirical grounding for how much KDE/Voronoi disagreement is "normal" at small N vs. genuinely concerning. Candidate for Sprint-0 validation (§35) recalibration once real annotated footage with known ground-truth crowd counts is available. |
+| Degraded-path density grid uses a raw per-cell point count (`_histogram_fallback_grid`), NOT a KDE surface with confidence lowered — `backend/app/pipeline/density.py` | 9 | Unsmoothed histogram: each point increments exactly one grid cell by `1.0`, no spatial spread into neighboring cells | Not specified in the original prompt as its own decision; clarified on request. Whenever KDE cannot run at all (too few points) or numerically fails (`LinAlgError`, e.g. exactly-coincident points), `gaussian_kde` is never invoked — this is a structurally different computation path, not the same smoothed estimate with a lower `estimation_confidence` attached, since a KDE surface would misleadingly imply spatial confidence in point location that doesn't exist with this few points. | Not a numeric threshold to recalibrate — a structural implementation choice. Logged here only so a future reader doesn't assume the degraded grid is "KDE, just less trusted." |
+| `DENSITY_CONGESTION_THRESHOLD` / `FLOW_MAGNITUDE_CONGESTION_THRESHOLD_PX_PER_SEC` — `backend/app/core/config.py` | 10 | `0.1` people/cell, `40.0` px/s | Congestion requires density AND low flow magnitude, combined (frozen decision — density alone never triggers it). Informed by REAL observed values: re-running Phase 9's own preview script against `people_clip.mp4` (149 frame-pairs) plus a one-off probe of per-cell speed found occupied-cell (density > 0.01) density had p90=0.108 and stable, non-degraded multi-track frames typically peaked max_density ~0.11-0.18; occupied-cell speed had p25=28.0 px/s and whole-grid speed had p25=37.6 px/s. 0.1 and 40.0 sit just at/above these real percentiles. | Not empirically validated — informed by real observed distributions on ONE video, not tuned against labeled ground-truth "this was actually a congested queue" events. PIXEL-SPACE-native, same units limitation as Phase 9's own thresholds (see "Known Structural Limitation" below). Candidate for Sprint-0 validation (§35) recalibration. |
+| `BOTTLENECK_WINDOW_FRAMES` — `backend/app/core/config.py` | 10 | `30` frames (~1s at `people_clip.mp4`'s 30fps) | Rolling window length for Bottleneck's tracer-advection convergence measurement — the spec's own suggested starting point (`~30`). No sensitivity analysis performed on how window length affects the convergence ratio's reliability. | Not empirically validated. A shorter window reacts faster but is noisier; a longer window is smoother but lets tracers drift further, compounding forward-Euler integration error (see "Known Design Tradeoff: Bottleneck's Simplified Lagrangian Method" below). Candidate for Sprint-0 validation (§35) recalibration. |
+| Reverse Flow constants (`REVERSE_FLOW_BASELINE_EMA_ALPHA=0.1`, `REVERSE_FLOW_MIN_BASELINE_OBSERVATIONS=15`, `REVERSE_FLOW_DEVIATION_THRESHOLD_DEGREES=120`, `REVERSE_FLOW_PERSISTENCE_WINDOW_FRAMES=10`, `REVERSE_FLOW_PERSISTENCE_MIN_COUNT=6`) — `backend/app/core/config.py` / `backend/app/pipeline/reverse_flow.py` | 10 | See values above | All five are the spec's own suggested defaults, not independently derived. Unlike Congestion's two thresholds, NONE of these five are pixel-space quantities — EMA alpha is a learning rate, the two frame/observation counts are plain integers, and the deviation threshold is an ANGLE (degrees) — so the Phase 9/Congestion pixel-space units disclosure does NOT apply to any of them. | Not empirically validated on real crowd footage. On `people_clip.mp4` (sparse, low-density) reverse flow was observed only briefly and marginally (frames 95-101, 1-3 of 252 cells flagged, fraction 0.004-0.012 — see the preview script's real run output) — too weak a signal to validate or invalidate these defaults either way. See "Known Design Tradeoff: Reverse Flow Mechanism Not Validated for Crowds" below. |
 
 ## Implementation-Discovered Constraints
 
@@ -63,6 +67,22 @@ the need for calibration entirely. Neither is implemented yet — this
 section exists so the gap is discoverable by anyone reading the project's
 decision history later, not just buried in code comments.
 
+**Phase 10 addendum.** This limitation extends to Congestion's two new
+thresholds (`DENSITY_CONGESTION_THRESHOLD`, `FLOW_MAGNITUDE_CONGESTION_
+THRESHOLD_PX_PER_SEC`) for the same reason — both are pixel-space-native
+and uncalibrated against any real venue. It does NOT extend to Reverse
+Flow's four new thresholds (EMA alpha, baseline observation count,
+deviation-degrees, persistence window/count) — none of those are
+pixel-space quantities, so this limitation is explicitly flagged as NOT
+applying to them (see the Reverse Flow row in the table above). Bottleneck's
+`bottleneck_score_grid` is also exempt: it's a ratio of two same-unit
+lengths (final spread / initial spread), so it's dimensionless and
+self-normalizing by construction — no pixel calibration constant needed
+for the score itself, only for `BOTTLENECK_WINDOW_FRAMES` (a frame count,
+not a units-disclosure concern either). Only `CROWD_GRID_CELL_SIZE_PX`
+(Phase 9) and Congestion's two thresholds (Phase 10) actually carry this
+specific pixel-vs-meters limitation.
+
 ## Known Design Tradeoff: Density Excludes Lost Tracks
 
 **Phase 9** (`density.py`'s `compute_density_field`). Density is computed
@@ -84,3 +104,70 @@ something this phase silently works around. A future phase could
 reconsider this if density needs to be more responsive to newly-arriving
 people at the cost of occasionally being fed a not-yet-fully-confirmed
 position.
+
+## Known Design Tradeoff: Bottleneck's Simplified Forward-Euler Lagrangian Method (Not FTLE)
+
+**Phase 10** (`bottleneck.py`). Bottleneck deliberately uses a Lagrangian
+(tracer-advection) approach instead of the Eulerian divergence already
+computed in Phase 9's `flow_field.py`, because divergence is instantaneous
+and single-frame — it cannot detect people accumulating somewhere OVER
+TIME the way literally following virtual tracers through several frames
+of the velocity field can. This is a genuine, spec-required capability gap
+Eulerian divergence cannot fill, not a redundant reimplementation.
+
+However, this implementation is an intentional MVP SIMPLIFICATION, not the
+academic finite-time Lyapunov exponent (FTLE) method a rigorous Lagrangian
+coherent structures analysis would use:
+- **Forward-Euler integration only** (`position += velocity * dt`) — no
+  higher-order integrator (RK4, etc.). Forward-Euler accumulates more
+  numerical error per step than a higher-order method would, especially
+  compounded across `BOTTLENECK_WINDOW_FRAMES` steps on the coarse per-cell
+  velocity field. Adequate for a directional convergence SIGNAL, not a
+  precise trajectory.
+- **Tracers are re-seeded at cell centers every rolling window**, not
+  carried forward indefinitely — bounds memory/compute and avoids tracers
+  drifting arbitrarily far from their origin cell over a long video, at
+  the cost of "forgetting" convergence history older than the window.
+- **"Spread"** is a simple mean-distance-from-centroid statistic over a
+  cell's own tracer plus its immediate 8-connected neighbors' tracers —
+  not a rigorously derived deformation-gradient eigenvalue (the actual
+  FTLE quantity).
+- Bilinear interpolation query positions are CLAMPED into the grid's cell-
+  center coordinate range rather than extrapolated beyond it — a tracer
+  that would have advected outside the frame is instead held at the
+  nearest edge for interpolation purposes each step, which slightly
+  understates convergence/divergence strength very near frame edges.
+
+The resulting `bottleneck_score_grid` ratio (final spread / initial
+spread) IS genuinely dimensionless and self-normalizing (a design
+advantage explicitly noted in the Phase 10 prompt) — this simplification
+is about the trajectory-computation method, not the resulting score's
+interpretability. Not validated against any labeled "this location was a
+real bottleneck" ground truth. Candidate for a future phase to upgrade to
+a higher-order integrator or true FTLE if the simplified signal proves
+too noisy or too weak in practice.
+
+## Known Design Tradeoff: Reverse Flow Mechanism Not Validated for Crowds
+
+**Phase 10** (`reverse_flow.py`). This mechanism (per-zone learned EMA
+direction baseline + cosine-based angular deviation + rolling-window
+temporal persistence) is explicitly adapted from vehicle wrong-way-
+detection literature. The master spec itself flags this adaptation as
+needing pedestrian-domain validation — pedestrians do not move like
+vehicles: they have far more locally-variable, non-lane-constrained
+motion, so a "wrong way" concept borrowed from traffic monitoring may
+turn out to be a poor behavioral model for crowds (e.g. flagging normal
+counter-flow at a doorway or a person weaving through a queue as "reverse
+flow" when it isn't a meaningful safety signal). This implementation
+builds the MECHANISM honestly and exactly as specified — it does not
+claim, here or anywhere else in this codebase, that the mechanism has
+been validated as behaviorally correct for pedestrian crowds.
+
+On the one real video available in this project (`people_clip.mp4`, a
+sparse, low-density scene), reverse flow triggered only briefly and
+marginally (frames 95-101 of a 149-frame-pair run; 1-3 of 252 cells
+flagged at a time; `reverse_flow_cell_fraction` never exceeding 0.012) —
+too weak and too brief a signal on this one video to serve as either
+validation or invalidation of the mechanism's real-world usefulness for
+crowds. Candidate for real pedestrian-domain validation once labeled
+"genuine wrong-way flow" footage is available (Sprint-0/pilot, §35/§39).

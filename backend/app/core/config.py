@@ -82,6 +82,80 @@ class Settings(BaseSettings):
     # calibration exists in this project — see DECISIONS.md's "Known
     # Structural Limitation: Pixel-Space vs. Real-World Units" section).
     CROWD_GRID_CELL_SIZE_PX: int = 40
+    # Phase 10 (Congestion, decision #2): a cell counts as "dense" once its
+    # DensityField.grid value (people/cell) reaches this. Density ALONE
+    # never triggers congestion (frozen decision) — see
+    # FLOW_MAGNITUDE_CONGESTION_THRESHOLD_PX_PER_SEC below, required in
+    # combination.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (same category as CROWD_GRID_CELL_SIZE_PX
+    # above — logged in DECISIONS.md): 0.1, informed by real observed values
+    # from Phase 9's preview script re-run against people_clip.mp4 — density
+    # at "occupied" cells (density > 0.01) had p90=0.108 across a 149-frame
+    # run, and stable, non-degraded, multi-track frames (6-10 confirmed
+    # tracks) typically peaked at max_density ~0.11-0.18. 0.1 sits just
+    # below that observed range, not calibrated against any real venue.
+    DENSITY_CONGESTION_THRESHOLD: float = 0.1
+    # Phase 10 (Congestion, decision #2): a cell counts as "low flow" (the
+    # OTHER required half of congestion) once its FlowGridField
+    # grid_mean_velocity magnitude (true pixels/second, per Phase 9) drops
+    # to or below this.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 40.0,
+    # informed by the same real preview re-run — per-cell speed at
+    # "occupied" cells had p25=28.0 px/s, and the whole-grid speed
+    # distribution (all cells, all frames) had p25=37.6 px/s. 40.0 sits just
+    # above both lower-quartile values, intended to capture the bottom
+    # ~quarter of observed motion as "notably slow," not calibrated against
+    # any real venue's physical scale.
+    FLOW_MAGNITUDE_CONGESTION_THRESHOLD_PX_PER_SEC: float = 40.0
+    # Phase 10 (Bottleneck, decision #3): how many recent FlowGridField
+    # snapshots the rolling window keeps for tracer advection. Not a
+    # pixel-space quantity — this is a frame-count/temporal-horizon choice,
+    # not a units-disclosure-affected constant.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30 (~1s at
+    # people_clip.mp4's 30fps), the spec's own suggested starting point — no
+    # sensitivity analysis performed on how window length affects the
+    # bottleneck score's reliability.
+    BOTTLENECK_WINDOW_FRAMES: int = 30
+    # Phase 10 (Reverse Flow, decision #4): exponential-moving-average decay
+    # rate for each grid cell's learned baseline direction (higher = faster
+    # adaptation to recent direction, lower = more stable/slower-adapting
+    # baseline). Angle-based, not a pixel-space quantity.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 0.1, the
+    # spec's own suggested default — not tuned against real footage.
+    REVERSE_FLOW_BASELINE_EMA_ALPHA: float = 0.1
+    # Phase 10 (Reverse Flow, decision #4): minimum number of motion
+    # observations a cell must accumulate before its baseline is trusted
+    # enough to check for reverse flow at all.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 15, the
+    # spec's own suggested default.
+    REVERSE_FLOW_MIN_BASELINE_OBSERVATIONS: int = 15
+    # Phase 10 (Reverse Flow, decision #4): angular deviation (degrees)
+    # between a cell's current-frame direction and its established baseline
+    # beyond which that single frame counts as "locally reversed." Angle-
+    # based — unit-agnostic, no pixel-space calibration concern.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 120.0, the
+    # spec's own suggested default.
+    REVERSE_FLOW_DEVIATION_THRESHOLD_DEGREES: float = 120.0
+    # Phase 10 (Reverse Flow, decision #4): size of the rolling boolean
+    # window (in frames) of "locally reversed" flags kept per cell for the
+    # temporal-persistence check.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 10, the
+    # spec's own suggested default.
+    REVERSE_FLOW_PERSISTENCE_WINDOW_FRAMES: int = 10
+    # Phase 10 (Reverse Flow, decision #4): minimum number of "locally
+    # reversed" frames within the persistence window required before
+    # is_reverse_flow is actually set True for a cell.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 6, the
+    # spec's own suggested default.
+    REVERSE_FLOW_PERSISTENCE_MIN_COUNT: int = 6
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5
