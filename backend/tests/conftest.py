@@ -143,6 +143,19 @@ def _risk_thresholds_from_code_defaults(monkeypatch):
         monkeypatch.setattr(settings, field_name, Settings.model_fields[field_name].default)
 
 
+@pytest.fixture(autouse=True)
+def _vlm_model_from_code_default(monkeypatch):
+    # Phase 14: VLM_MODEL is ANOTHER pre-existing key (Phase 1 placeholder
+    # "placeholder-vlm") that the developer's real .env already sets — same
+    # stale-.env-shadowing issue as _risk_thresholds_from_code_defaults
+    # above, now affecting Vision Intelligence: without this override,
+    # every real-inference test in test_minicpm_vlm.py would try to call
+    # Ollama with model="placeholder-vlm" (never pulled, doesn't exist) and
+    # skip/fail instead of exercising real inference against the actually-
+    # pulled minicpm-v4.6:q4_K_M tag.
+    monkeypatch.setattr(settings, "VLM_MODEL", Settings.model_fields["VLM_MODEL"].default)
+
+
 @pytest.fixture
 def make_video(db_session, test_user):
     def _make_video(

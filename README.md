@@ -87,3 +87,30 @@ The first line shows what's currently running so you can sanity-check before
 killing anything; the second force-stops all `python.exe`/`node.exe`
 processes system-wide, not just this project's — close any other Node/Python
 work first if you have some running.
+
+**A feature added in a recent phase behaves strangely, or a config value
+seems to have no effect** — before assuming it's a code bug, check whether
+your local `.env` is simply out of date. Every phase that adds a new
+config variable documents it in `.env.example`, but your own `.env` (created
+once via `cp .env.example .env` and never auto-updated) does NOT pick up
+later changes automatically. Because pydantic-settings reads your real
+`.env` BEFORE falling back to `config.py`'s own defaults, a stale key in
+your `.env` silently overrides a newer, intentional default — this has
+caused real, reproduced bugs three separate times in this project's history
+(Phase 6, Phase 13, Phase 14 — see `DECISIONS.md`'s "Implementation-
+Discovered Constraints" entries).
+
+Run this after pulling any phase's changes that touched `.env.example`,
+before assuming your `.env` is up to date:
+
+```
+python scripts/check_env_drift.py
+```
+
+It prints every config key your `.env` and `.env.example` have in common,
+side by side, flagging any that differ, plus any key `.env.example` has that
+your `.env` doesn't yet. A difference isn't automatically wrong (your own
+`DATABASE_URL` password, for example, is supposed to differ) — the point is
+just to make staleness visible so you can decide. It's a plain manual
+script (stdlib only, no venv activation needed) — not run automatically by
+any hook or CI.

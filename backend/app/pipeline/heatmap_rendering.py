@@ -82,7 +82,14 @@ from app.pipeline.density import DensityField
 from app.pipeline.flow_field import FlowGridField
 from app.pipeline.predictive_projection import PredictiveProjection
 from app.pipeline.reverse_flow import ReverseFlowField
-from app.pipeline.risk_score import _redistribute_weights  # deliberate reuse, see module docstring
+from app.pipeline.risk_score import _redistribute_weights, compute_risk_grid  # deliberate reuse, see module docstring
+# NOTE: `_redistribute_weights` is no longer called directly in this module
+# (Phase 14 extracted the per-cell combination logic below into
+# `compute_risk_grid`, which now calls it instead) — kept imported here
+# anyway so `test_risk_heatmap_reuses_phase11_redistribute_weights_function_
+# directly`'s identity check (`heatmap_rendering._redistribute_weights is
+# risk_score._redistribute_weights`) continues to hold, and so a reader of
+# this module can still see the connection at a glance.
 
 _COLORMAP = cv2.COLORMAP_TURBO
 _RESIZE_INTERPOLATION = cv2.INTER_LINEAR
@@ -203,52 +210,12 @@ def render_risk_heatmap(
     frame_width: int,
     frame_height: int,
 ) -> np.ndarray:
-    shape = congestion.congestion_score_grid.shape
-    if pressure.grid.shape != shape or reverse_flow.is_reverse_flow_grid.shape != shape:
-        raise ValueError(
-            "Risk heatmap inputs (pressure/congestion/reverse_flow) must "
-            "share the same grid shape"
-        )
-
-    pressure_subscore_grid = np.clip(
-        pressure.grid / settings.PRESSURE_SCORE_REFERENCE_PX * 100.0, 0.0, 100.0
-    )
-    congestion_subscore_grid = congestion.congestion_score_grid * 100.0
-    reverse_flow_subscore_grid = np.where(reverse_flow.is_reverse_flow_grid, 100.0, 0.0)
-
-    without_bottleneck_weights = _redistribute_weights(["pressure", "congestion", "reverse_flow"])
-    without_bottleneck_grid = (
-        without_bottleneck_weights["pressure"] * pressure_subscore_grid
-        + without_bottleneck_weights["congestion"] * congestion_subscore_grid
-        + without_bottleneck_weights["reverse_flow"] * reverse_flow_subscore_grid
-    )
-
-    if bottleneck is None:
-        risk_grid = without_bottleneck_grid
-    else:
-        if bottleneck.bottleneck_score_grid.shape != shape:
-            raise ValueError(
-                "BottleneckField.bottleneck_score_grid must share the same "
-                "grid shape as the other risk heatmap inputs"
-            )
-        bottleneck_subscore_grid = np.clip(
-            (1.0 - bottleneck.bottleneck_score_grid) * 100.0, 0.0, 100.0
-        )
-        with_bottleneck_weights = _redistribute_weights(
-            ["pressure", "congestion", "bottleneck", "reverse_flow"]
-        )
-        with_bottleneck_grid = (
-            with_bottleneck_weights["pressure"] * pressure_subscore_grid
-            + with_bottleneck_weights["congestion"] * congestion_subscore_grid
-            + with_bottleneck_weights["bottleneck"] * np.nan_to_num(bottleneck_subscore_grid)
-            + with_bottleneck_weights["reverse_flow"] * reverse_flow_subscore_grid
-        )
-        # Per-cell NaN fallback — see Resolution 1 in the module docstring.
-        risk_grid = np.where(
-            np.isnan(bottleneck.bottleneck_score_grid), without_bottleneck_grid, with_bottleneck_grid
-        )
-
-    risk_grid = np.clip(risk_grid, 0.0, 100.0)
+    # Phase 14 (decision #1): the per-cell combination formula itself now
+    # lives in risk_score.py's compute_risk_grid (extracted from here, this
+    # module's own original Resolution 1) so this module and
+    # roi_selection.py's select_roi share ONE implementation. Behavior is
+    # unchanged — see compute_risk_grid's docstring for the full formula.
+    risk_grid = compute_risk_grid(pressure, congestion, bottleneck, reverse_flow)
     return _normalize_and_colormap(risk_grid, 100.0, frame_width, frame_height)
 
 

@@ -227,8 +227,45 @@ class Settings(BaseSettings):
     # Resolved to an absolute path the same way as VIDEO_STORAGE_PATH (Phase
     # 2/3's cwd-relative bug fix) — see heatmap_service.py's get_storage_dir.
     HEATMAP_STORAGE_PATH: str = "storage/heatmaps"
-    VLM_MODEL: str = "placeholder-vlm"
+    # Phase 1 placeholder, genuinely activated for the first time in Phase
+    # 14. Verified real Ollama model tag (see DECISIONS.md's Ollama-over-
+    # raw-bindings and MiniCPM-V 4.6 version-selection entries): MiniCPM-V
+    # 4.6 at the Q4_K_M quantization tier — confirmed to exist via
+    # ollama.com/library/minicpm-v4.6/tags (13 tags listed, q4_K_M among
+    # them, 1.6GB, 256K context) and confirmed actually pulled and runnable
+    # in this environment (`ollama list` shows it present).
+    VLM_MODEL: str = "minicpm-v4.6:q4_K_M"
     LLM_MODEL: str = "placeholder-llm"
+    # Phase 14: base URL of the locally-running Ollama daemon (verified
+    # installed and running in this environment — `ollama --version` /
+    # `curl http://localhost:11434/api/version` both succeeded). Ollama's
+    # own default port; not something this project's own code chose.
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    # Phase 14 (ROI selection, decision #1): the argmax risk-grid cell's
+    # own pixel footprint is expanded by this factor (uniformly around its
+    # center) before being sent as the VLM's zoomed ROI crop, so the model
+    # gets more visual context than one small grid cell alone.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 3.0, a
+    # reasonable-looking round multiplier — not tuned against any real
+    # "was this crop actually useful to the VLM" evaluation.
+    ROI_EXPANSION_FACTOR: float = 3.0
+    # Phase 14 (decision #5): if the model's response fails schema
+    # validation (defensively re-validated even though Ollama's `format`
+    # constraint should already enforce it, per §30), retry this many times
+    # before raising VLMResponseValidationError.
+    VLM_MAX_RETRIES: int = 2
+    # Phase 14 (decision #6): how long to wait for a single Ollama chat
+    # call before treating it as unavailable (VLMUnavailableError) — local
+    # CPU VLM inference can be slow, so this is deliberately generous
+    # compared to a typical web-request timeout.
+    VLM_REQUEST_TIMEOUT_SECONDS: float = 60.0
+    # Phase 14 (decision #7): low, near-deterministic (but not exactly 0.0,
+    # to avoid known degenerate-repetition issues some models exhibit at
+    # exactly 0) sampling temperature for schema-constrained structured
+    # output, per Ollama's own documented recommendation for structured
+    # outputs.
+    VLM_TEMPERATURE: float = 0.15
     # Phase 13 (Risk State, Resolution 1 + decisions #1-#4): these three
     # were Phase 1 PLACEHOLDER values on a 0-1 scale, never actually
     # consumed by any code until this phase. RiskStateMachine classifies

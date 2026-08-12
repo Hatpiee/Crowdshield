@@ -127,6 +127,81 @@ def _redistribute_weights(available_signals: list[str]) -> dict[str, float]:
     return {signal: weight / total for signal, weight in available_weights.items()}
 
 
+def compute_risk_grid(
+    pressure: CrowdPressureField,
+    congestion: CongestionField,
+    bottleneck: BottleneckField | None,
+    reverse_flow: ReverseFlowField,
+) -> np.ndarray:
+    """The per-cell risk grid — extracted here in Phase 14 (decision #1)
+    from where it was originally embedded inline inside Phase 12's
+    heatmap_rendering.py `render_risk_heatmap` (that phase's Resolution 1),
+    so BOTH `render_risk_heatmap` (Phase 12) and `roi_selection.py`'s
+    `select_roi` (Phase 14) call this SAME underlying function rather than
+    two independent copies of the formula. Behavior is UNCHANGED by this
+    extraction — same weighted-combination formula, same configured
+    weights, same per-cell NaN-fallback handling described in Phase 12's
+    original module docstring; only the location moved.
+
+    Applies compute_risk_score's exact per-signal sub-score formulas and
+    `_redistribute_weights` POINTWISE across the grid, using each signal's
+    own native per-cell field (pressure.grid, congestion_score_grid,
+    bottleneck_score_grid, is_reverse_flow_grid) instead of Phase 11's
+    single-scalar reductions (max_pressure, congested_cell_fraction, etc).
+    This is philosophically CONSISTENT with but NOT NUMERICALLY IDENTICAL
+    to `compute_risk_score`'s scalar output — different reduction method
+    per signal. Returns the raw grid, clipped to [0, 100] — NOT
+    colormapped/resized (heatmap_rendering.py's job) and NOT reduced to a
+    scalar (this module's own `compute_risk_score`'s job).
+    """
+    shape = congestion.congestion_score_grid.shape
+    if pressure.grid.shape != shape or reverse_flow.is_reverse_flow_grid.shape != shape:
+        raise ValueError(
+            "compute_risk_grid inputs (pressure/congestion/reverse_flow) "
+            "must share the same grid shape"
+        )
+
+    pressure_subscore_grid = np.clip(
+        pressure.grid / settings.PRESSURE_SCORE_REFERENCE_PX * 100.0, 0.0, 100.0
+    )
+    congestion_subscore_grid = congestion.congestion_score_grid * 100.0
+    reverse_flow_subscore_grid = np.where(reverse_flow.is_reverse_flow_grid, 100.0, 0.0)
+
+    without_bottleneck_weights = _redistribute_weights(["pressure", "congestion", "reverse_flow"])
+    without_bottleneck_grid = (
+        without_bottleneck_weights["pressure"] * pressure_subscore_grid
+        + without_bottleneck_weights["congestion"] * congestion_subscore_grid
+        + without_bottleneck_weights["reverse_flow"] * reverse_flow_subscore_grid
+    )
+
+    if bottleneck is None:
+        risk_grid = without_bottleneck_grid
+    else:
+        if bottleneck.bottleneck_score_grid.shape != shape:
+            raise ValueError(
+                "BottleneckField.bottleneck_score_grid must share the same "
+                "grid shape as the other risk grid inputs"
+            )
+        bottleneck_subscore_grid = np.clip(
+            (1.0 - bottleneck.bottleneck_score_grid) * 100.0, 0.0, 100.0
+        )
+        with_bottleneck_weights = _redistribute_weights(
+            ["pressure", "congestion", "bottleneck", "reverse_flow"]
+        )
+        with_bottleneck_grid = (
+            with_bottleneck_weights["pressure"] * pressure_subscore_grid
+            + with_bottleneck_weights["congestion"] * congestion_subscore_grid
+            + with_bottleneck_weights["bottleneck"] * np.nan_to_num(bottleneck_subscore_grid)
+            + with_bottleneck_weights["reverse_flow"] * reverse_flow_subscore_grid
+        )
+        # Per-cell NaN fallback — see Phase 12's original Resolution 1.
+        risk_grid = np.where(
+            np.isnan(bottleneck.bottleneck_score_grid), without_bottleneck_grid, with_bottleneck_grid
+        )
+
+    return np.clip(risk_grid, 0.0, 100.0)
+
+
 def compute_risk_score(
     density: DensityField,
     pressure: CrowdPressureField,
