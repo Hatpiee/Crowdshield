@@ -24,6 +24,7 @@ to as similar judgment calls come up in future phases.
 | `PRESSURE_SCORE_REFERENCE_PX` — `backend/app/core/config.py` | 11 | `100.0` (pixel-space, "people * pixels^2/second^2 per cell") | Risk Score's pressure sub-score is `min(100, max_pressure / PRESSURE_SCORE_REFERENCE_PX * 100)` — worst-case-sensitive by design (uses `max_pressure`, not `mean_pressure`; see "Known Design Choice: Pressure Uses max, Projection Uses mean" below). Informed by REAL observed values: re-running Phase 9's preview script against `people_clip.mp4` (149 frame-pairs) found `max_pressure` p25=2.58, median=14.89, p75=41.0, p90=73.4, p95=89.5, max=262.8. 100.0 sits just above the real p95, so only the top ~5% of observed frames (plus any footage with genuinely worse local crushing) saturate the sub-score at 100. | Not empirically validated — informed by real observed distribution on ONE sparse video, not tuned against labeled ground-truth crush events. PIXEL-SPACE-native, same units limitation as Phase 9/10's own thresholds. Candidate for Sprint-0 validation (§35) recalibration. |
 | `RISK_SCORE_WEIGHT_PRESSURE=0.5` / `RISK_SCORE_WEIGHT_CONGESTION=0.2` / `RISK_SCORE_WEIGHT_BOTTLENECK=0.2` / `RISK_SCORE_WEIGHT_REVERSE_FLOW=0.1` — `backend/app/core/config.py` | 11 | See values above (validated to sum to 1.0 at settings load time) | Pressure gets the largest weight per §12's own framing as "the single most heavily validated decision in the entire project"; Congestion and Bottleneck are weighted equally as secondary signals; Reverse Flow gets the smallest weight as the least-validated mechanism (adapted from vehicle wrong-way-detection literature, explicitly flagged by the spec itself as needing pedestrian-domain validation). When a sub-score is unavailable (only Bottleneck can be), its weight is redistributed proportionally at runtime among the available sub-scores (`risk_score.py`'s `_redistribute_weights`) — these four configured values are never edited per-frame to simulate that. | Not empirically validated — no labeled "this frame was genuinely high-risk" ground truth exists yet to tune against. The 0.5/0.2/0.2/0.1 split itself, not just the individual numbers, is an engineering judgment call (see risk_score.py's Design Rationale docstring). Candidate for Sprint-0 validation (§35) recalibration. |
 | `PREDICTIVE_WINDOW_SECONDS=10.0` / `PREDICTION_HORIZON_SECONDS=30.0` — `backend/app/core/config.py` | 11 | `10.0` / `30.0` seconds | Both are the spec's own suggested defaults for the lightweight linear-regression Crowd Pressure projection (`predictive_projection.py`). Time-based (not frame-count-based), so behavior is consistent across videos with different fps. | Not empirically validated. **Explicitly NOT the problem statement's "10 minutes before" figure** — see the dedicated "Known Design Tradeoff: Prediction Horizon vs. the Problem Statement's '10 Minutes Before'" section below for the full clarification; conflating the two would be statistically indefensible and is deliberately avoided everywhere in this phase's code, comments, and this log. Candidate for Sprint-0 validation (§35) recalibration of the window/horizon lengths themselves (not of the underlying clarification, which is a structural point, not a tunable). |
+| `DENSITY_HEATMAP_REFERENCE_COUNT` — `backend/app/core/config.py` | 12 | `0.2` (people/cell, DensityField.grid value that saturates the heatmap color scale) | Informed by REAL observed values: a fresh Phase 9 preview re-run against `people_clip.mp4` (150 frames), restricted to frames where KDE ran at FULL confidence (no too-few-points/singular-covariance degradation — n=35 such frames), found `max_density` ranged 0.078-0.177 (median 0.127, p90=0.163) — never exceeding ~0.18 under genuine multi-point KDE smoothing on this sparse video. 0.2 sits just above that real observed ceiling. | Not calibrated against any real venue's physical capacity per cell. Deliberately does NOT use the full-run max (which often hit exactly 1.0 via the histogram-fallback degradation path on very-few-point frames — an estimation artifact, not genuine crowding; see the Phase 9 "Degraded-path density grid" row above). Candidate for Sprint-0 validation (§35) recalibration once real annotated footage is available. |
 
 ## Implementation-Discovered Constraints
 
@@ -267,3 +268,113 @@ contract to classify NORMAL/ELEVATED/CRITICAL/INCIDENT with hysteresis,
 and the mandatory 5-heatmap-type VISUALIZATION system — both later,
 separate phases that read this data, neither one an addition to the
 `CrowdMetrics` dataclass itself.
+
+## Known Design Choice: Risk Heatmap Is a Per-Cell Reapplication of Phase 11's Formula, Not the Same Number Spatialized
+
+**Phase 12** (`heatmap_rendering.py`'s `render_risk_heatmap`, Resolution
+1). Phase 11's `risk_score.py` computes ONE scalar per frame using
+per-signal REDUCTIONS: `max_pressure` (a single worst-cell number),
+`congested_cell_fraction` (a single grid-wide fraction), the grid's
+minimum bottleneck ratio, and `reverse_flow_cell_fraction` (another
+single grid-wide fraction). That's correct for its purpose — the future
+Trigger Engine needs one thresholdable number per frame, not a grid.
+
+This phase needed a genuinely SPATIAL risk artifact, since a heatmap by
+definition renders a grid. Rather than inventing a new, undocumented
+scoring scheme, `render_risk_heatmap` applies Phase 11's EXACT SAME
+weighted-combination formula and EXACT SAME configured weights
+(`RISK_SCORE_WEIGHT_*`) POINTWISE — even importing `risk_score.py`'s own
+`_redistribute_weights` helper directly rather than reimplementing it
+(verified by identity, not just value equality, in
+`test_heatmap_rendering.py`). Each signal's own NATIVE per-cell field is
+used instead of Phase 11's frame-level reduction:
+- pressure: `CrowdPressureField.grid[cell] / PRESSURE_SCORE_REFERENCE_PX * 100`
+- congestion: `CongestionField.congestion_score_grid[cell] * 100`
+- bottleneck: `(1 - BottleneckField.bottleneck_score_grid[cell]) * 100`
+- reverse_flow: `ReverseFlowField.is_reverse_flow_grid[cell] ? 100 : 0`
+
+**This is philosophically consistent with, but NOT numerically identical
+to, Phase 11's scalar `risk_score`** — different reduction method per
+signal (max/min/fraction reductions vs. direct pointwise combination), so
+the two will generally differ even on the same frame. `test_heatmap_
+rendering.py`'s correlation test checks only a REASONABLE DIRECTIONAL
+relationship (a low-risk scenario produces both a lower scalar AND a
+lower heatmap mean/max than a high-risk scenario) — exact equality is
+never asserted and is not the expected bar. Bottleneck-unavailable
+handling mirrors Phase 11 exactly (weight redistribution across the
+remaining signals), extended one level more granularly to individual
+NaN cells (only possible on a degenerate 1-row/1-col grid).
+
+## Known Design Choice: Predictive Heatmap Is a Trend-Scaled View, Not an Independent Per-Cell Forecast
+
+**Phase 12** (`heatmap_rendering.py`'s `render_predictive_heatmap`,
+Resolution 2). Master spec §12 states heatmaps render "already-computed
+fields" — genuine per-cell time-series forecasting (fitting an
+independent trend PER GRID CELL) would be COMPUTING NEW DATA, which is
+explicitly outside a rendering phase's charter. This phase therefore does
+NOT build per-cell forecasting. Instead, the CURRENT
+`CrowdPressureField.grid` (the real, already-computed spatial PATTERN) is
+uniformly SCALED by the ratio `projection.projected_pressure / current
+mean_pressure` — the trend applies a single scalar adjustment to the
+existing spatial shape rather than inventing a new one. If current
+`mean_pressure` is exactly 0.0 (an empty/still scene with no spatial
+pattern to scale), scaling is skipped entirely and the projected value is
+used directly as a uniform low-level field instead of dividing by zero —
+handled and tested explicitly (`test_predictive_heatmap_zero_current_
+mean_pressure_does_not_divide_by_zero`).
+
+This limitation — "trend-scaled view of the current pattern, NOT an
+independent forecast" — is embedded as VISIBLE TEXT directly on the
+rendered image itself (decision #6), not only documented in code or this
+log, and its presence is verified by a concrete pixel-region test
+(`test_predictive_heatmap_trend_disclaimer_genuinely_present`), not just
+trusted from reading the render function's source. This is the first
+phase where the rendered artifact IS the deliverable a downstream
+consumer (dashboard, API client) actually sees — Phase 9's equivalent
+units disclaimer only ever had to travel as far as console output and a
+dataclass field.
+
+Per Resolution 2, when `CrowdMetrics.predictive_projection` is `None`
+(PressureProjector's window hasn't accumulated enough history yet, per
+Phase 11), the Predictive heatmap is SKIPPED for that generation event
+entirely — never fabricated from a missing projection. This is the ONLY
+one of the 5 mandatory types that can ever be skipped (decision #7);
+Density/Pressure/Flow-Congestion/Risk are always generated, with Risk's
+own Bottleneck-unavailable case absorbed internally via weight
+redistribution rather than a skip.
+
+## Known Design Choice: Two New API Routes Are a Deliberate, Reasoned Exception
+
+**Phase 12** (`app/api/heatmaps.py`, Resolution 3). Every phase since
+Phase 6 (Detection) through Phase 11 (Risk Score/Predictive Projection)
+deliberately added NO new API routes — those phases were pure in-memory
+pipeline primitives with nothing persisted worth exposing yet. This
+phase breaks that pattern, on purpose, because master spec §26
+explicitly names `GET /sessions/{id}/heatmaps` and `GET /sessions/{id}
+/heatmaps/{type}` as FROZEN API surface, and — unlike a hypothetical
+premature "detection results" route in an earlier phase would have
+been — `heatmap_snapshots` is by THIS PHASE'S OWN DESIGN a genuinely
+PERSISTED, session-scoped DB resource: a real foreign key to
+`analysis_sessions`, real JPEG files on disk, real rows a client could
+legitimately want to list or fetch metadata for right now. Adding the
+routes here is exposing something that already durably exists, not
+building ahead of the data model the way an early route would have.
+
+Both routes are DELIBERATELY READ-ONLY and METADATA-ONLY:
+- Neither serves raw image bytes — `HeatmapSnapshotRead` excludes
+  `file_path` entirely (same reasoning `VideoRead` excluded
+  `storage_filename` in Phase 3), and actual byte serving is deferred to
+  the dashboard integration phase, for UNIFORM treatment of all static
+  asset serving handled together later (video streaming was deferred for
+  the identical reason in Phase 3 — this isn't a new inconsistency, it's
+  the same precedent applied again).
+- Neither triggers generation on demand — both only query
+  ALREADY-PERSISTED `HeatmapSnapshot` rows created by
+  `generate_and_persist_heatmaps` (called by `scripts/preview_heatmaps.py`
+  for this phase's own verification, and by a future orchestration phase
+  in production — never by these routes themselves).
+
+Verified, not just asserted: `test_heatmaps_api.py` covers 401 (no auth),
+200 with correct envelope shape and `file_path` genuinely absent from
+every response, 400 for an invalid `{type}` path segment, and 404 for
+both a nonexistent session and a valid type with no snapshot yet.

@@ -205,6 +205,28 @@ class Settings(BaseSettings):
     # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30.0
     # seconds, the spec's own suggested default.
     PREDICTION_HORIZON_SECONDS: float = 30.0
+    # Phase 12 (Heatmaps, decision #3): DensityField.grid value (people/cell)
+    # that maps to full-scale ("hottest") heatmap color.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 0.2, informed
+    # by real observed values from a fresh Phase 9 preview re-run against
+    # people_clip.mp4 (150 frames): restricted to frames where KDE ran at
+    # FULL confidence (no too-few-points/singular-covariance degradation,
+    # n=35 such frames), max_density ranged 0.078-0.177 (median 0.127,
+    # p90=0.163) — i.e. never exceeded ~0.18 under genuine multi-point KDE
+    # smoothing on this sparse video. 0.2 sits just above that real observed
+    # ceiling. (Across ALL 149 frames including degraded few-point frames,
+    # max_density often hit exactly 1.0 — a single track's full weight
+    # concentrated into one histogram-fallback cell, per Phase 9's own
+    # documented degradation behavior — deliberately NOT used to set this
+    # reference, since it reflects a small-N estimation artifact, not
+    # genuine crowding.) Not calibrated against any real venue's physical
+    # capacity per cell.
+    DENSITY_HEATMAP_REFERENCE_COUNT: float = 0.2
+    # Phase 12: filesystem path where rendered heatmap JPEGs are stored.
+    # Resolved to an absolute path the same way as VIDEO_STORAGE_PATH (Phase
+    # 2/3's cwd-relative bug fix) — see heatmap_service.py's get_storage_dir.
+    HEATMAP_STORAGE_PATH: str = "storage/heatmaps"
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
     RISK_ELEVATED_THRESHOLD: float = 0.5

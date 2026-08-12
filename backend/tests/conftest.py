@@ -108,6 +108,14 @@ def _video_storage_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "VIDEO_STORAGE_PATH", str(tmp_path / "videos"))
 
 
+@pytest.fixture(autouse=True)
+def _heatmap_storage_tmp(tmp_path, monkeypatch):
+    # Same test-isolation pattern as _video_storage_tmp above (Phase 3),
+    # extended to Phase 12's HEATMAP_STORAGE_PATH — tests must never write
+    # to the developer's real storage/heatmaps/.
+    monkeypatch.setattr(settings, "HEATMAP_STORAGE_PATH", str(tmp_path / "heatmaps"))
+
+
 @pytest.fixture
 def make_video(db_session, test_user):
     def _make_video(
