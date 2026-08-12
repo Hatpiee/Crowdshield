@@ -25,6 +25,11 @@ to as similar judgment calls come up in future phases.
 | `RISK_SCORE_WEIGHT_PRESSURE=0.5` / `RISK_SCORE_WEIGHT_CONGESTION=0.2` / `RISK_SCORE_WEIGHT_BOTTLENECK=0.2` / `RISK_SCORE_WEIGHT_REVERSE_FLOW=0.1` — `backend/app/core/config.py` | 11 | See values above (validated to sum to 1.0 at settings load time) | Pressure gets the largest weight per §12's own framing as "the single most heavily validated decision in the entire project"; Congestion and Bottleneck are weighted equally as secondary signals; Reverse Flow gets the smallest weight as the least-validated mechanism (adapted from vehicle wrong-way-detection literature, explicitly flagged by the spec itself as needing pedestrian-domain validation). When a sub-score is unavailable (only Bottleneck can be), its weight is redistributed proportionally at runtime among the available sub-scores (`risk_score.py`'s `_redistribute_weights`) — these four configured values are never edited per-frame to simulate that. | Not empirically validated — no labeled "this frame was genuinely high-risk" ground truth exists yet to tune against. The 0.5/0.2/0.2/0.1 split itself, not just the individual numbers, is an engineering judgment call (see risk_score.py's Design Rationale docstring). Candidate for Sprint-0 validation (§35) recalibration. |
 | `PREDICTIVE_WINDOW_SECONDS=10.0` / `PREDICTION_HORIZON_SECONDS=30.0` — `backend/app/core/config.py` | 11 | `10.0` / `30.0` seconds | Both are the spec's own suggested defaults for the lightweight linear-regression Crowd Pressure projection (`predictive_projection.py`). Time-based (not frame-count-based), so behavior is consistent across videos with different fps. | Not empirically validated. **Explicitly NOT the problem statement's "10 minutes before" figure** — see the dedicated "Known Design Tradeoff: Prediction Horizon vs. the Problem Statement's '10 Minutes Before'" section below for the full clarification; conflating the two would be statistically indefensible and is deliberately avoided everywhere in this phase's code, comments, and this log. Candidate for Sprint-0 validation (§35) recalibration of the window/horizon lengths themselves (not of the underlying clarification, which is a structural point, not a tunable). |
 | `DENSITY_HEATMAP_REFERENCE_COUNT` — `backend/app/core/config.py` | 12 | `0.2` (people/cell, DensityField.grid value that saturates the heatmap color scale) | Informed by REAL observed values: a fresh Phase 9 preview re-run against `people_clip.mp4` (150 frames), restricted to frames where KDE ran at FULL confidence (no too-few-points/singular-covariance degradation — n=35 such frames), found `max_density` ranged 0.078-0.177 (median 0.127, p90=0.163) — never exceeding ~0.18 under genuine multi-point KDE smoothing on this sparse video. 0.2 sits just above that real observed ceiling. | Not calibrated against any real venue's physical capacity per cell. Deliberately does NOT use the full-run max (which often hit exactly 1.0 via the histogram-fallback degradation path on very-few-point frames — an estimation artifact, not genuine crowding; see the Phase 9 "Degraded-path density grid" row above). Candidate for Sprint-0 validation (§35) recalibration once real annotated footage is available. |
+| `RISK_ELEVATED_THRESHOLD=40.0` / `RISK_CRITICAL_THRESHOLD=65.0` — `backend/app/core/config.py` | 13 | `40.0` / `65.0` (on Phase 11's `risk_score` 0-100 scale — see Resolution 1 below, NOT the Phase 1 placeholders' old 0-1 scale) | Informed by REAL observed values: a fresh preview re-run of `scripts/preview_risk_score_projection.py` against `people_clip.mp4` (149 frame-pairs) found `risk_score` p25=4.32, median=10.08, p75=22.22, p90=39.31, p95=47.12, max=53.37, mean=15.50. `RISK_ELEVATED_THRESHOLD=40.0` sits just above the real p90; `RISK_CRITICAL_THRESHOLD=65.0` sits ABOVE the real observed max — genuine CRITICAL requires conditions worse than anything this calm, sparse video ever produced. | Not empirically validated against labeled "this was genuinely elevated/critical" ground truth — informed by real observed distribution on ONE sparse video only. Candidate for Sprint-0 (§35) recalibration. **See the environment-staleness finding below — the developer's real `.env` may still shadow these with Phase 1's 0-1-scale placeholders.** |
+| `RISK_INCIDENT_THRESHOLD=85.0` — `backend/app/core/config.py` | 13 | `85.0` | Diagnostic-only (decision #4) — does NOT drive a state transition this phase (Resolution 2). Set well above `RISK_CRITICAL_THRESHOLD` since no real "genuine crush incident" ground truth exists yet to calibrate against. | Not empirically validated — no incident ground truth exists in this project at all yet. Candidate for Sprint-0 (§35) recalibration once real annotated incident footage exists. |
+| `RISK_STATE_FALL_HYSTERESIS_MARGIN=10.0` — `backend/app/core/config.py` | 13 | `10.0` (same 0-100 `risk_score` scale) | Informed by REAL observed values: the same `people_clip.mp4` preview re-run found mean absolute frame-to-frame `risk_score` delta ≈9.58 across 148 consecutive frame-pairs. 10.0 sits just above that real observed noise floor, so ordinary single-frame jitter alone cannot cross both a rise and its fall threshold and cause flapping. | Not empirically validated — one video's volatility profile only. A deliberate simplification of §40's plural "hysteresis margins" wording into ONE shared margin (`fall_threshold = rise_threshold - margin` for both ELEVATED and CRITICAL) rather than 3 independently-tunable fall thresholds, to keep config surface small. Candidate for Sprint-0 (§35) recalibration. |
+| `RISK_STATE_PERSISTENCE_FRAMES=30` — `backend/app/core/config.py` | 13 | `30` frames (~1s at `people_clip.mp4`'s 30fps) | Same "~1s at 30fps" reasoning already used for `BOTTLENECK_WINDOW_FRAMES` (Phase 10) — long enough that a single anomalous frame can never trigger escalation (§14's explicit requirement), short enough that genuine sustained escalation doesn't feel sluggish. Also reused, unmodified, as decision #4's `incident_threshold_crossed` diagnostic-flag persistence window (a deliberate reuse rather than a new config surface for a metadata-only flag). | Not empirically validated — no sensitivity analysis on how persistence length affects false-positive/false-negative escalation rates. Candidate for Sprint-0 (§35) recalibration. |
+| `VLM_COOLDOWN=30` / `FALLBACK_ANALYSIS_INTERVAL=60` — `backend/app/core/config.py` | 1 (placeholder), genuinely activated 13 | `30` seconds / `60` seconds | Phase 1 placeholder values, never consumed by any code until this phase's `TriggerEngine` (decisions #6/#7). Kept at their original numbers — reasonable round defaults, not re-derived — but now genuinely documented and load-bearing: `VLM_COOLDOWN` rate-limits repeated RISK firing at the same severity level; `FALLBACK_ANALYSIS_INTERVAL` paces the risk-independent periodic check. | Not empirically validated — no real VLM cost/latency model exists yet to optimize either value against. Candidate for Sprint-0 (§35) recalibration once Vision Intelligence is built. |
 
 ## Implementation-Discovered Constraints
 
@@ -38,6 +43,7 @@ respect.
 |---|---|---|---|
 | `ByteTrackAdapter` / `trackers.ByteTrackTracker` enforces strict timestamp monotonicity | Phase 8→9 bridging check — two-pass memory investigation (`scripts/preview_full_pipeline.py`) | The underlying library silently no-ops any `update()` call whose `timestamp` is earlier than one it has already seen on that instance. Confirmed empirically, not assumed: re-running the same 300-frame span through the SAME tracker instance a second time triggered exactly 300 `UserWarning: ... timestamp X is earlier than the previous timestamp ... Skipping update` warnings — one per frame — with the tracker doing essentially nothing (no real association, no state update) for the entire second pass, even though the frames themselves were valid and detection/optical-flow processed them normally. | A single `Tracker` instance must process exactly ONE continuous, monotonically-increasing pass through one video, start to finish — it must never be restarted, replayed, or fed frames out of temporal order. This is in addition to (not a replacement for) Phase 7's existing "never reuse a Tracker instance across two different videos" rule. The not-yet-built AnalysisOrchestrator (§28) must construct a fresh `ByteTrackAdapter` per video/session and must never re-feed it a session that could produce a non-increasing `timestamp_seconds` sequence — e.g. a naive retry/replay path that just calls `update()` again from frame 0 would silently produce near-empty tracking output with no hard error. |
 | **[FIXED]** `PressureProjector`'s TIME-based rolling window did NOT gracefully handle a non-monotonic/reset timestamp sequence — unlike `ByteTrackAdapter`, it did not no-op, it silently over-retained | Discovered: Phase 11→12 bridging check — two-pass replay run (`scripts/preview_full_crowd_intelligence_bridging.py`). Fixed: immediate bug-fix follow-up task (`predictive_projection.py`, `PressureProjector.update()`). | ORIGINAL DEFECT: `update()`'s prune step (`cutoff = latest_timestamp - PREDICTIVE_WINDOW_SECONDS`, keep only entries with `t >= cutoff`) assumed `latest_timestamp` only ever increases. Confirmed empirically on a 600-frame two-pass replay of the same video through the SAME `PressureProjector` instance: Pass 1's `data_points_used` stayed correctly bounded (max 301, matching `PREDICTIVE_WINDOW_SECONDS=10.0s` @ 30fps). At the start of Pass 2, `latest_timestamp` dropped back to ~0s (the replayed video's own timestamps restart from 0) while the window still held Pass 1's tail entries (timestamps ~10-20s) — the resulting `cutoff` became negative, so nothing got pruned, and the window ballooned to `data_points_used=602` by the end of Pass 2. NOT a genuine memory leak in absolute terms (small `(float, float)` tuples, a few KB even at 2x size) and NOT visible under RSS measurement — a CORRECTNESS defect in the window-bound invariant, not a memory-safety one. THE FIX: `update()` now compares each new `pressure.timestamp_seconds` against the window's current latest entry BEFORE appending anything; if the new timestamp is `<=` the latest one already held, the update is REJECTED — logged via `logger.warning` (this module's own `logging.getLogger(__name__)`, matching the codebase's existing convention in `app/api/auth.py`, since there is no `warnings.warn` convention of this project's own to mirror — the ByteTrackAdapter warning the task referenced comes from the third-party `trackers` library, not from this codebase), the existing window is left completely untouched, and the rejection is made OBSERVABLE via a new `PressureProjector.last_update_rejected: bool` attribute (never just logged-and-forgotten, per this project's "never fail silently" principle) — `update()` also returns `None` for a rejected call, same as its existing "not enough data yet" case, but the two are now distinguishable via `last_update_rejected`. RE-VERIFIED after the fix: re-running the same 600-frame two-pass bridging script now shows Pass 2 emitting exactly 599 rejection warnings (one per frame, since every Pass-2 timestamp is `<=` Pass 1's final timestamp under full-video replay) and `projection_available_count=0` for Pass 2 — `data_points_used` never exceeds Pass 1's correctly-bounded max of 301 anywhere in the run. | Now mirrors `ByteTrackAdapter`'s FAILURE MODE, not just its underlying constraint: a `PressureProjector` instance, like a `Tracker` instance, must be fed exactly ONE continuous, monotonically-increasing pass through one video — but a violation is now safely rejected (loud warning + observable flag + untouched state) rather than silently corrupting the window's time-bound invariant. The not-yet-built AnalysisOrchestrator (§28) must still apply the "exactly one fresh instance per video/session, never replayed" discipline (this fix is a safety net against MISUSE, not a license to replay), but a misuse bug in that future orchestration code would now be caught via `last_update_rejected` and the warning log instead of manifesting as silent over-retention. Regression-tested in `test_predictive_projection.py` (`test_non_monotonic_timestamp_is_rejected_not_silently_absorbed`, `test_monotonic_operation_completely_unaffected_by_rejection_guard`). |
+| Stale `.env` placeholder thresholds silently shadow Phase 13's new calibrated `RISK_ELEVATED_THRESHOLD`/`RISK_CRITICAL_THRESHOLD`/`RISK_INCIDENT_THRESHOLD` defaults, and interact badly with the new `RISK_STATE_FALL_HYSTERESIS_MARGIN` | Discovered running `scripts/preview_risk_trigger.py` against `people_clip.mp4` (Phase 13) | These three keys are PRE-EXISTING (Phase 1 placeholders, 0-1 scale: `0.5`/`0.75`/`0.9`) and the developer's real `.env` already sets them — pydantic-settings' env-file source takes precedence over `config.py`'s class defaults, so this phase's new, real, 0-100-scale-calibrated defaults (`40.0`/`65.0`/`85.0`) are silently shadowed in this environment (this project never edits the developer's real `.env`). Confirmed empirically: running the preview script under the live (stale) config, `people_clip.mp4`'s real `risk_score` values (typically 10-50 on the 0-100 scale) trivially exceed `0.5`/`0.75`, so the state machine escalated all the way to CRITICAL by frame 63 of 150 — NOT the expected calm/NORMAL behavior for this established sparse video. Worse, this ALSO silently broke de-escalation: `RISK_STATE_FALL_HYSTERESIS_MARGIN` (a genuinely NEW key, correctly defaulting to `10.0`, NOT present in the stale `.env`) combined with the stale `RISK_CRITICAL_THRESHOLD=0.75` produces `fall_critical = 0.75 - 10.0 = -9.25` — permanently negative, so NO non-negative `risk_score` (the type is clipped to `[0, 100]` by `compute_risk_score`) can ever satisfy `risk_score < fall_critical`, making de-escalation from CRITICAL mathematically unreachable under this specific stale-vs-fresh key mismatch. Re-running the SAME script with the three threshold keys overridden via one-off process environment variables (NOT the real `.env` — env vars take precedence over `.env` in pydantic-settings' source order, so this is a non-invasive way to demonstrate intended behavior) reproduced the CORRECT, expected result: 0 real-video transitions (state stayed NORMAL the whole run, matching Phase 9-11's own repeated "sparse/low-risk video" finding) and a clean synthetic NORMAL→ELEVATED→CRITICAL escalation with 2 RISK triggers (including the cooldown-override case) in the addendum. | The code is correct and behaves exactly as designed in both runs — this is a PURE environment-configuration issue, not a code defect. `scripts/preview_risk_trigger.py` now prints the ACTIVE threshold values plus a loud warning whenever they differ from `config.py`'s own authored defaults, specifically so this class of staleness is never mistaken for a logic bug. `backend/tests/conftest.py`'s `_risk_thresholds_from_code_defaults` autouse fixture shields the test suite from this same issue by forcing `config.py`'s class defaults for these seven keys regardless of local `.env` content. **Action needed from the developer** (out of scope for this session — real `.env` is never edited here): update the real `.env`'s `RISK_ELEVATED_THRESHOLD`/`RISK_CRITICAL_THRESHOLD`/`RISK_INCIDENT_THRESHOLD` lines to match `.env.example`'s new `40.0`/`65.0`/`85.0` before relying on this phase's escalation behavior outside of tests/explicit env-var overrides. |
 
 ## Known Structural Limitation: Pixel-Space vs. Real-World Units
 
@@ -378,3 +384,102 @@ Verified, not just asserted: `test_heatmaps_api.py` covers 401 (no auth),
 200 with correct envelope shape and `file_path` genuinely absent from
 every response, 400 for an invalid `{type}` path segment, and 404 for
 both a nonexistent session and a valid type with no snapshot yet.
+
+## Resolution 1 (Phase 13): RiskStateMachine Classifies risk_score, Not Raw Crowd Pressure
+
+**Phase 13** (`risk_state.py`), continuing the units-caveat thread started
+at Phase 9's Critical Units Disclosure and carried through Phases 10-12.
+Master spec §14 frames risk states as "operationalizing the underlying
+Crowd Pressure thresholds" and cites literature real-world SI values
+(~0.02/0.04 s⁻²). As established since Phase 9, this project's computed
+Crowd Pressure remains PIXEL-space (no camera calibration exists), so
+those literal literature numbers are inapplicable here — using them
+directly would silently misrepresent a pixel-space quantity as a
+calibrated physical one.
+
+`RiskStateMachine` sidesteps this the same way every phase since Phase 9
+has: it classifies state from Phase 11's `risk_score`
+(`RiskScoreResult.risk_score`), NOT from a raw `CrowdPressureField` value.
+`risk_score` is already 0-100 normalized/dimensionless (Phase 11's own
+`compute_risk_score` clips it to that range) and already weighted 50%
+toward Pressure by Phase 11's own design
+(`RISK_SCORE_WEIGHT_PRESSURE=0.5`) — so Pressure's real-world significance
+is still the dominant input to the classification, just laundered through
+Phase 11's normalization rather than consumed as a raw pixel-space number
+with an inapplicable literature threshold bolted onto it. This is an
+honest sidestep of the units mismatch, not a resolution of it — the
+underlying "no camera calibration" limitation (see "Known Structural
+Limitation: Pixel-Space vs. Real-World Units" above) is unchanged by this
+phase.
+
+## Resolution 2 (Phase 13): INCIDENT Is Defined but Structurally Unreachable — and Is NOT the Future Incident Entity
+
+**Phase 13** (`risk_state.py`). Per §14's own state diagram, the
+CRITICAL → INCIDENT transition is gated by "Decision Intelligence
+confirms" — a component that does not exist until a much later roadmap
+phase. `RiskState` defines the full eventual four-value enum
+(`NORMAL`/`ELEVATED`/`CRITICAL`/`INCIDENT`) NOW, in this phase, the same
+honest pattern Phase 4's `SessionStatus` used when it shipped
+`PROCESSING`/`COMPLETED`/`FAILED` values no code path could produce yet
+— but `RiskStateMachine` has NO code path, anywhere, that can ever
+produce `INCIDENT`. Its real ceiling this phase is CRITICAL, structurally
+(see `_evaluate_candidate`'s `RiskState.CRITICAL` branch — there is no
+upward candidate defined there at all, not merely an unmet threshold
+check). Proven, not just asserted, by
+`test_risk_state.py::test_incident_state_is_structurally_unreachable_this_phase`,
+which feeds `risk_score=100.0` (the maximum possible value) for 400
+consecutive frames and confirms the observed-states set never contains
+`RiskState.INCIDENT` and the final state is `RiskState.CRITICAL`.
+
+**CRITICAL NAMING DISAMBIGUATION** (worth over-stating given its
+importance for later phases): `RiskState.INCIDENT` is a classification
+LABEL produced by THIS state machine only. It is NOT the same thing as
+the future "Incident" DATABASE ENTITY (§19, roadmap Phase 18) with its
+own `DETECTED`/`ACTIVE`/`RESOLVED` lifecycle and operator actions
+(acknowledge/dismiss/resolve/escalate, §20). Phase 13 creates NO table,
+model, or route named plain "incidents" and implements NO operator
+incident-management actions — `risk_events` (this phase's ONLY new
+table) records risk-STATE TRANSITIONS, not incident lifecycle events.
+Decision #3's related point: de-escalation FROM `INCIDENT` specifically
+("operator resolves") is explicitly out of scope this phase — it would
+require the real Incident Manager architecture that doesn't exist until
+Phase 18. Since `INCIDENT` is unreachable this phase anyway (per above),
+this is currently a moot/theoretical exclusion, documented here for
+completeness rather than because it changes any observable behavior
+today.
+
+## Known Design Choice: Trigger Priority and the RISK-Cooldown Override
+
+**Phase 13** (`trigger_engine.py`, decisions #5/#6/#9). `TriggerEngine`
+checks conditions in a fixed, documented priority order every
+`evaluate()` call: **OPERATOR > RISK > FALLBACK > NONE**. An explicit
+human request always wins (decision #8's plumbing-only OPERATOR flag);
+a genuine risk escalation is checked next; a routine periodic FALLBACK
+check is lowest priority. When RISK and FALLBACK are both eligible in
+the same call, RISK wins AND FALLBACK's own interval timer is left
+untouched (not consumed) — so it remains eligible on the very next
+call, rather than being silently reset by a cycle it didn't actually
+get to fire in
+(`test_trigger_engine.py::test_priority_risk_wins_over_fallback_when_both_true_and_fallback_stays_pending`
+verifies this exact mechanic).
+
+RISK reuses `RiskStateResult.state_changed_this_frame` plus a severity-
+rank comparison against the state seen on the PREVIOUS `evaluate()` call
+(decision #5) — rather than a second, independently-tunable threshold
+that could disagree with `RiskStateMachine` right at a boundary. Once
+RISK fires, further RISK firing at the SAME severity level is suppressed
+for `VLM_COOLDOWN` seconds — EXCEPT a genuinely HIGHER escalation during
+that cooldown window (e.g. ELEVATED→CRITICAL shortly after an earlier
+NORMAL→ELEVATED firing) overrides the cooldown and fires immediately
+(decision #6) — a real crisis worsening must never be silently swallowed
+by a cooldown whose only purpose is preventing redundant re-triggering at
+an unchanged severity. Verified end-to-end, not just in isolated unit
+tests, by `scripts/preview_risk_trigger.py`'s synthetic addendum: feeding
+a value between the ELEVATED and CRITICAL rise thresholds first (fires
+RISK, starts cooldown), then a value above the CRITICAL rise threshold
+well inside the cooldown window, produced exactly the override firing
+with `reason` containing "(cooldown override: new higher escalation)".
+FALLBACK and OPERATOR are never subject to this cooldown at all (decision
+#6's own scope) — FALLBACK has its own independent `FALLBACK_ANALYSIS_
+INTERVAL` timer, and OPERATOR is a deliberate human action that must
+never be silently suppressed.

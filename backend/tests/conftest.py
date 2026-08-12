@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
@@ -114,6 +114,33 @@ def _heatmap_storage_tmp(tmp_path, monkeypatch):
     # extended to Phase 12's HEATMAP_STORAGE_PATH — tests must never write
     # to the developer's real storage/heatmaps/.
     monkeypatch.setattr(settings, "HEATMAP_STORAGE_PATH", str(tmp_path / "heatmaps"))
+
+
+@pytest.fixture(autouse=True)
+def _risk_thresholds_from_code_defaults(monkeypatch):
+    # Phase 13: RISK_ELEVATED_THRESHOLD / RISK_CRITICAL_THRESHOLD /
+    # RISK_INCIDENT_THRESHOLD are PRE-EXISTING keys (Phase 1 placeholders,
+    # 0-1 scale) that the developer's real .env already sets — pydantic-
+    # settings' env-file source takes precedence over config.py's class
+    # defaults, so the real, calibrated, 0-100-scale defaults this phase
+    # authored are silently shadowed by the stale placeholders UNLESS the
+    # developer manually updates their local .env (not done here — this
+    # project never edits the developer's real .env, see DECISIONS.md).
+    # Forcing the class defaults here (not the possibly-stale live
+    # `settings` values) keeps Phase 13's tests deterministic and correct
+    # regardless of local .env drift, exactly like _video_storage_tmp/
+    # _heatmap_storage_tmp above shield tests from the developer's real
+    # storage paths.
+    for field_name in (
+        "RISK_ELEVATED_THRESHOLD",
+        "RISK_CRITICAL_THRESHOLD",
+        "RISK_INCIDENT_THRESHOLD",
+        "RISK_STATE_FALL_HYSTERESIS_MARGIN",
+        "RISK_STATE_PERSISTENCE_FRAMES",
+        "VLM_COOLDOWN",
+        "FALLBACK_ANALYSIS_INTERVAL",
+    ):
+        monkeypatch.setattr(settings, field_name, Settings.model_fields[field_name].default)
 
 
 @pytest.fixture

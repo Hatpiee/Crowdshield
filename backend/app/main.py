@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
 from app.api.heatmaps import router as heatmaps_router
+from app.api.risk import router as risk_router
 from app.api.sessions import router as sessions_router
 from app.api.videos import router as videos_router
 from app.core.config import settings
@@ -51,6 +52,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(videos_router, prefix="/api/v1")
 app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(heatmaps_router, prefix="/api/v1")
+app.include_router(risk_router, prefix="/api/v1")
 
 
 @app.get("/health")

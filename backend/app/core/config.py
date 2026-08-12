@@ -229,10 +229,75 @@ class Settings(BaseSettings):
     HEATMAP_STORAGE_PATH: str = "storage/heatmaps"
     VLM_MODEL: str = "placeholder-vlm"
     LLM_MODEL: str = "placeholder-llm"
-    RISK_ELEVATED_THRESHOLD: float = 0.5
-    RISK_CRITICAL_THRESHOLD: float = 0.75
-    RISK_INCIDENT_THRESHOLD: float = 0.9
+    # Phase 13 (Risk State, Resolution 1 + decisions #1-#4): these three
+    # were Phase 1 PLACEHOLDER values on a 0-1 scale, never actually
+    # consumed by any code until this phase. RiskStateMachine classifies
+    # Phase 11's `risk_score` (0-100, NOT raw pixel-space Crowd Pressure —
+    # see risk_state.py's Resolution 1), so the values below are on THAT
+    # 0-100 scale, not the old 0-1 placeholders.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): informed by
+    # a fresh real preview re-run of scripts/preview_risk_score_projection.py
+    # against people_clip.mp4 (149 frame-pairs) — risk_score distribution:
+    # p25=4.32, median=10.08, p75=22.22, p90=39.31, p95=47.12, max=53.37,
+    # mean=15.50. This is an established sparse/low-risk video (Phase 9-11's
+    # own repeated finding).
+    # RISK_ELEVATED_THRESHOLD=40.0 sits just above the real observed p90
+    # (39.31) — the top ~10% of individual frames on this calm video would
+    # nominally cross it, though persistence+hysteresis (decisions #1/#2)
+    # require RISK_STATE_PERSISTENCE_FRAMES consecutive frames before that
+    # actually confirms a transition.
+    RISK_ELEVATED_THRESHOLD: float = 40.0
+    # RISK_CRITICAL_THRESHOLD=65.0 sits ABOVE the real observed max (53.37)
+    # on this video — genuine CRITICAL escalation requires conditions worse
+    # than anything actually seen on this calm, sparse footage, which is
+    # the intended behavior (this video should never itself reach CRITICAL
+    # under normal operation).
+    RISK_CRITICAL_THRESHOLD: float = 65.0
+    # RISK_INCIDENT_THRESHOLD=85.0 — diagnostic-only (decision #4, does NOT
+    # drive a state transition this phase, see risk_state.py's
+    # incident_threshold_crossed). No real "this was genuinely a crush
+    # incident" ground truth exists yet to calibrate against; set well above
+    # RISK_CRITICAL_THRESHOLD to represent a genuinely severe, sustained
+    # level, not merely "somewhat worse than critical."
+    RISK_INCIDENT_THRESHOLD: float = 85.0
+    # Phase 13 (decision #1): shared FALL threshold margin — each rise
+    # threshold's fall counterpart is (rise_threshold - this margin), rather
+    # than 3 independently-tunable fall thresholds (a deliberate
+    # simplification of §40's plural "hysteresis margins" language; logged
+    # in DECISIONS.md). Informed by real observed frame-to-frame risk_score
+    # volatility on the SAME people_clip.mp4 preview re-run: mean absolute
+    # delta between consecutive frames was ~9.58 across 148 frame-pairs.
+    # 10.0 sits just above that real observed noise floor, so ordinary
+    # single-frame jitter alone cannot cross both a rise and its fall
+    # threshold and cause flapping.
+    RISK_STATE_FALL_HYSTERESIS_MARGIN: float = 10.0
+    # Phase 13 (decision #2): a candidate rise/fall condition must hold for
+    # this many CONSECUTIVE update() calls before a transition is confirmed.
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30 frames
+    # (~1s at people_clip.mp4's 30fps) — the same "~1s at 30fps" reasoning
+    # already used for BOTTLENECK_WINDOW_FRAMES (Phase 10): long enough that
+    # a single anomalous frame can never trigger escalation (§14's explicit
+    # requirement), short enough that a genuine sustained escalation isn't
+    # felt as sluggish.
+    RISK_STATE_PERSISTENCE_FRAMES: int = 30
+    # Phase 1 placeholder, genuinely activated for the first time in Phase
+    # 13 (decision #6): once a RISK trigger fires, further RISK firing at
+    # the SAME severity level is suppressed for this many seconds (a
+    # genuinely HIGHER escalation during the cooldown window overrides it —
+    # see trigger_engine.py). No real VLM exists yet to empirically tune
+    # this against; 30s is a reasonable placeholder-turned-real default,
+    # long enough to avoid redundant re-triggering on ordinary risk_score
+    # noise for the same escalation event, short enough that a later
+    # genuinely new escalation isn't seriously delayed.
     VLM_COOLDOWN: int = 30
+    # Phase 1 placeholder, genuinely activated for the first time in Phase
+    # 13 (decision #7): FALLBACK fires every this-many REAL seconds
+    # (timestamp-based, not frame-count-based), completely independent of
+    # risk state — a periodic baseline check so the future VLM/LLM path is
+    # exercised occasionally even during calm periods. 60s is a reasonable
+    # placeholder-turned-real default; not empirically tuned (no VLM cost
+    # model exists yet to optimize against).
     FALLBACK_ANALYSIS_INTERVAL: int = 60
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
@@ -251,6 +316,53 @@ class Settings(BaseSettings):
                 "RISK_SCORE_WEIGHT_PRESSURE + RISK_SCORE_WEIGHT_CONGESTION + "
                 "RISK_SCORE_WEIGHT_BOTTLENECK + RISK_SCORE_WEIGHT_REVERSE_FLOW "
                 f"must sum to 1.0, got {total}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_risk_state_threshold_range(self) -> "Settings":
+        # Phase 13 follow-up: ORDERING alone (the next validator below) does
+        # NOT catch a threshold on the wrong SCALE — Phase 1's stale 0-1
+        # placeholders (0.5 < 0.75 < 0.9) satisfy strict ordering perfectly
+        # while being catastrophically wrong for risk_score's actual 0-100
+        # scale (see DECISIONS.md's "stale .env" Implementation-Discovered
+        # Constraint — this validator is the direct fix for that real,
+        # already-observed bug, not a hypothetical improvement). risk_score
+        # is clipped to [0, 100] by compute_risk_score (§12/Phase 11) — every
+        # threshold compared against it must fall within that same bound.
+        for field_name in (
+            "RISK_ELEVATED_THRESHOLD",
+            "RISK_CRITICAL_THRESHOLD",
+            "RISK_INCIDENT_THRESHOLD",
+        ):
+            value = getattr(self, field_name)
+            if not (0.0 <= value <= 100.0):
+                raise ValueError(
+                    f"{field_name} must fall within [0, 100] (risk_score's own "
+                    f"documented range, §12/Phase 11), got {value}. If this "
+                    "value came from a real .env file, it is likely a stale "
+                    "Phase 1 placeholder on the old 0-1 scale — see "
+                    "DECISIONS.md's 'stale .env' Implementation-Discovered "
+                    "Constraint."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_risk_state_threshold_order(self) -> "Settings":
+        # Decision #4: RISK_INCIDENT_THRESHOLD doesn't drive a transition
+        # this phase, but it must still be validated in order — a
+        # diagnostic flag that could fire BELOW the CRITICAL threshold that
+        # gates it would be nonsensical.
+        if not (
+            self.RISK_ELEVATED_THRESHOLD
+            < self.RISK_CRITICAL_THRESHOLD
+            < self.RISK_INCIDENT_THRESHOLD
+        ):
+            raise ValueError(
+                "RISK_ELEVATED_THRESHOLD < RISK_CRITICAL_THRESHOLD < "
+                "RISK_INCIDENT_THRESHOLD must hold, got "
+                f"{self.RISK_ELEVATED_THRESHOLD}, {self.RISK_CRITICAL_THRESHOLD}, "
+                f"{self.RISK_INCIDENT_THRESHOLD}"
             )
         return self
 
