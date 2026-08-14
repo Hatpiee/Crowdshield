@@ -20,10 +20,20 @@ SAME summary-level shape Phase 14 already built for the VLM's own prompt
 context: `CompactCrowdMetricsSummary`, reused directly rather than
 inventing a second, slightly-different summary shape. Logged in
 DECISIONS.md.
+
+SCHEMA EVOLUTION (Phase 17 decision #3): `predictive_projection_snapshot`
+is a genuinely NEW field, not present on any "1.0" package — Phase 17 (the
+Reasoner) is EvidencePackage's first consumer needing Phase 11's
+`PredictiveProjection` (§8 requires narrating "the deterministic pressure
+forecast"). `SCHEMA_VERSION` is bumped to "1.1" for NEWLY-BUILT packages
+only; existing persisted "1.0" rows are never retroactively modified — this
+is the first real exercise of the versioning mechanism Phase 16 built
+specifically to accommodate this kind of additive evolution.
 """
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Optional
 
 from app.pipeline.trigger_engine import TriggerType
 from app.pipeline.vision_observation import (
@@ -31,7 +41,21 @@ from app.pipeline.vision_observation import (
     VisionObservation,
 )
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
+
+
+@dataclass
+class PredictiveProjectionSnapshot:
+    """Compact narration-ready subset of Phase 11's `PredictiveProjection`
+    (§8, decision #3) — deliberately NOT the full dataclass: only the three
+    values the Reasoner is allowed to narrate (never recompute or invent).
+    `window_seconds_used`/`data_points_used`/`frame_number`/
+    `timestamp_seconds` are internal fitting diagnostics, not narration
+    inputs, and are intentionally left out of this snapshot."""
+
+    projected_pressure: float
+    horizon_seconds: float
+    r_squared: float
 
 
 @dataclass
@@ -85,3 +109,8 @@ class EvidencePackageResult:
     representative_frame_path: str = ""
     roi_crop_path: str = ""
     roi_bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    # Phase 17 decision #3: None whenever PressureProjector hasn't
+    # accumulated enough history yet (Phase 11's own established pattern —
+    # never fabricated), or on any "1.0"-era package built before this field
+    # existed.
+    predictive_projection_snapshot: Optional[PredictiveProjectionSnapshot] = None

@@ -66,6 +66,11 @@ class EvidencePackage(Base):
     representative_frame_path: Mapped[str] = mapped_column(Text, nullable=False)
     roi_crop_path: Mapped[str] = mapped_column(Text, nullable=False)
     roi_bbox: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Phase 17 decision #3: NULLABLE — absent on every "1.0"-era row (built
+    # before this field existed) and on any package built without enough
+    # PressureProjector history yet (Phase 11's own established pattern).
+    # Never retroactively backfilled on existing rows.
+    predictive_projection_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

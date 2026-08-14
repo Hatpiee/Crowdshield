@@ -48,6 +48,11 @@ def persist_evidence_package(db: Session, result: EvidencePackageResult) -> Evid
         representative_frame_path=result.representative_frame_path,
         roi_crop_path=result.roi_crop_path,
         roi_bbox=list(result.roi_bbox),
+        predictive_projection_snapshot=(
+            dataclasses.asdict(result.predictive_projection_snapshot)
+            if result.predictive_projection_snapshot is not None
+            else None
+        ),
     )
     db.add(package)
     # Flush before adding dependent EvidenceItem rows: both PKs are

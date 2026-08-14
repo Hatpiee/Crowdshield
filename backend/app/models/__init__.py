@@ -6,3 +6,4 @@ from app.models.processing_run import ProcessingRun, ProcessingRunStatus  # noqa
 from app.models.heatmap import HeatmapSnapshot, HeatmapType  # noqa: F401
 from app.models.risk_event import RiskEvent  # noqa: F401
 from app.models.evidence import EvidencePackage, EvidenceItem  # noqa: F401
+from app.models.decision import DecisionResultRow  # noqa: F401

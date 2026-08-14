@@ -235,7 +235,16 @@ class Settings(BaseSettings):
     # them, 1.6GB, 256K context) and confirmed actually pulled and runnable
     # in this environment (`ollama list` shows it present).
     VLM_MODEL: str = "minicpm-v4.6:q4_K_M"
-    LLM_MODEL: str = "placeholder-llm"
+    # Phase 1 placeholder, genuinely activated for the first time in Phase
+    # 17. §8/§17/§40 pin "Qwen3-8B" specifically (unlike MiniCPM-V's
+    # unpinned family name) — verified via `ollama.com/library/qwen3/tags`
+    # that "qwen3:8b" (5.2GB, 40K context) is the exact current tag, and
+    # confirmed actually pulled and runnable in this environment (`ollama
+    # list`). A newer "Qwen3.5" family also exists on Ollama (0.8b-122b,
+    # vision/tools/thinking variants) as of this phase — deliberately NOT
+    # used here, per the spec's explicit string pin; logged as a
+    # forward-looking note in DECISIONS.md, not a silent substitution.
+    LLM_MODEL: str = "qwen3:8b"
     # Phase 14: base URL of the locally-running Ollama daemon (verified
     # installed and running in this environment — `ollama --version` /
     # `curl http://localhost:11434/api/version` both succeeded). Ollama's
@@ -343,6 +352,33 @@ class Settings(BaseSettings):
     # get_storage_dir. This is the FIRST persistence of these image types to
     # disk; Phase 14's VLM calls were purely in-memory.
     EVIDENCE_FRAMES_STORAGE_PATH: str = "storage/evidence_frames"
+    # Phase 17 (Reasoner, decision #7): mirrors VLM_MAX_RETRIES/
+    # VLM_REQUEST_TIMEOUT_SECONDS/VLM_TEMPERATURE's naming exactly, for
+    # consistency — same retry-then-raise failure discipline as
+    # VLMUnavailableError (Phase 14), now for LLMUnavailableError.
+    LLM_MAX_RETRIES: int = 2
+    LLM_REQUEST_TIMEOUT_SECONDS: float = 90.0
+    LLM_TEMPERATURE: float = 0.15
+    # Phase 17 (decision #4): the confidence floor AT OR BELOW which
+    # should_abstain() short-circuits to ABSTAIN without calling the LLM at
+    # all (should_abstain() uses an INCLUSIVE "<=" comparison — see its own
+    # docstring for why the floor value itself must also trigger abstention,
+    # not just values strictly below it).
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 0.4,
+    # informed by REAL data: density.py's own TOO_FEW_POINTS_CONFIDENCE=0.4
+    # tier is the worst systematic density-estimation confidence this
+    # pipeline ever emits (an estimate from fewer than
+    # MIN_POINTS_FOR_RELIABLE_ESTIMATION=3 tracked points, essentially a
+    # guess) — at or below that floor, abstaining is the honest answer, not
+    # a generative-reasoning question. Cross-checked against the two real
+    # EvidencePackage rows persisted by Phase 16's own preview script (both
+    # confidence=0.5, landing at density.py's next tier up,
+    # HIGH_DISAGREEMENT_CONFIDENCE=0.5) — both would correctly NOT abstain
+    # on confidence grounds alone at this floor, since a "high disagreement"
+    # degraded-but-real estimate still supports bounded reasoning, unlike a
+    # "too few points" one.
+    DECISION_CONFIDENCE_FLOOR: float = 0.4
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
@@ -407,6 +443,21 @@ class Settings(BaseSettings):
                 "RISK_INCIDENT_THRESHOLD must hold, got "
                 f"{self.RISK_ELEVATED_THRESHOLD}, {self.RISK_CRITICAL_THRESHOLD}, "
                 f"{self.RISK_INCIDENT_THRESHOLD}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_decision_confidence_floor_range(self) -> "Settings":
+        # Same range-validation discipline as
+        # _validate_risk_state_threshold_range above — confidence values
+        # throughout this codebase (VisionObservation.confidence,
+        # EvidencePackageResult.confidence, DensityField.estimation_confidence)
+        # are always on a [0.0, 1.0] scale, never [0, 100].
+        if not (0.0 <= self.DECISION_CONFIDENCE_FLOOR <= 1.0):
+            raise ValueError(
+                "DECISION_CONFIDENCE_FLOOR must fall within [0.0, 1.0] "
+                f"(confidence's own documented range), got "
+                f"{self.DECISION_CONFIDENCE_FLOOR}"
             )
         return self
 

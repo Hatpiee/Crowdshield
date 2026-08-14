@@ -18,6 +18,7 @@ independent trigger event end-to-end.
 
 import uuid
 from pathlib import Path
+from typing import Optional
 
 import cv2
 from sqlalchemy.orm import Session
@@ -28,10 +29,12 @@ from app.pipeline.crowd_metrics import CrowdMetrics
 from app.pipeline.evidence_package import (
     Contradiction,
     EvidencePackageResult,
+    PredictiveProjectionSnapshot,
     RiskStateSnapshot,
     SCHEMA_VERSION,
 )
 from app.pipeline.frame import Frame
+from app.pipeline.predictive_projection import PredictiveProjection
 from app.pipeline.risk_state import RiskState, RiskStateResult
 from app.pipeline.trigger_engine import TriggerDecision
 from app.pipeline.vision_observation import (
@@ -200,6 +203,7 @@ class EvidenceBuilder:
         roi_bbox: tuple[float, float, float, float],
         vision_result: VisionAnalysisResult | None,
         vlm_call_succeeded: bool,
+        predictive_projection: Optional[PredictiveProjection] = None,
     ) -> EvidencePackageResult:
         session = db.get(AnalysisSession, session_id)
         if session is None:
@@ -238,6 +242,19 @@ class EvidenceBuilder:
             crowd_metrics, risk_state_result, vision_observations, vlm_call_succeeded
         )
 
+        # Phase 17 decision #3: compact narration-ready snapshot only —
+        # never the full PredictiveProjection (internal fitting diagnostics
+        # like data_points_used stay out, per PredictiveProjectionSnapshot's
+        # own docstring). None whenever the caller has no projection yet
+        # (PressureProjector's window hasn't accumulated enough history).
+        projection_snapshot = None
+        if predictive_projection is not None:
+            projection_snapshot = PredictiveProjectionSnapshot(
+                projected_pressure=predictive_projection.projected_pressure,
+                horizon_seconds=predictive_projection.horizon_seconds,
+                r_squared=predictive_projection.r_squared,
+            )
+
         return EvidencePackageResult(
             package_id=package_id,
             schema_version=SCHEMA_VERSION,
@@ -268,4 +285,5 @@ class EvidenceBuilder:
             representative_frame_path=representative_frame_path,
             roi_crop_path=roi_crop_path,
             roi_bbox=tuple(roi_bbox),
+            predictive_projection_snapshot=projection_snapshot,
         )

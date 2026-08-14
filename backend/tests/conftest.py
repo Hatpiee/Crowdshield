@@ -164,6 +164,18 @@ def _vlm_model_from_code_default(monkeypatch):
     monkeypatch.setattr(settings, "VLM_MODEL", Settings.model_fields["VLM_MODEL"].default)
 
 
+@pytest.fixture(autouse=True)
+def _llm_model_from_code_default(monkeypatch):
+    # Phase 17: LLM_MODEL is ANOTHER pre-existing key (Phase 1 placeholder
+    # "placeholder-llm") that the developer's real .env already sets — same
+    # stale-.env-shadowing issue as _vlm_model_from_code_default above, now
+    # affecting Decision Intelligence: without this override, every
+    # real-inference test in test_reasoner.py would try to call Ollama with
+    # model="placeholder-llm" (never pulled, doesn't exist) instead of the
+    # actually-pulled qwen3:8b tag.
+    monkeypatch.setattr(settings, "LLM_MODEL", Settings.model_fields["LLM_MODEL"].default)
+
+
 @pytest.fixture
 def make_video(db_session, test_user):
     def _make_video(

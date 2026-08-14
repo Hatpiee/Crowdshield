@@ -821,3 +821,217 @@ orchestration-level decision that doesn't exist yet (no
 simplification is deliberate, not an oversight, and is a reasonable
 starting point to extend later rather than a design that needs to be
 revisited from scratch.
+
+## Phase 17: Decision Intelligence (Reasoner) — Deterministic Abstention Is Not the LLM's Call
+
+**Significant architectural decision, not a minor implementation detail.**
+§8 names three abstention triggers: "confidence falls below a floor, a
+contradiction is unresolved, or evidence is materially incomplete." All
+three are ALREADY computable directly from Phase 16's `EvidencePackage`
+fields (`confidence`, `contradictions` — which per Phase 16's own design
+always carry `resolution_status="UNRESOLVED"` — and `complete`/`missing`).
+Delegating this to the LLM's own "judgment" would mean using generative
+reasoning for a question a deterministic check can already answer,
+directly contradicting this project's FIRST-listed constitutional
+principle, "Deterministic Before Generative" ("A purpose-built algorithm
+is used wherever one exists and works; generative AI is reserved for the
+residue nothing deterministic can solve").
+
+`abstention.py`'s `should_abstain()` runs in plain Python, checking all
+three conditions in order, BEFORE `Reasoner.reason()` ever constructs a
+prompt or touches Ollama. When it returns a reason, `reason()` builds and
+returns a `DecisionResult` with `outcome=ABSTAIN` directly — the LLM is
+NEVER invoked on that path. This also directly serves CPU-feasibility
+(Adaptive Computation): a structurally unresolvable case never pays for an
+expensive LLM call it cannot meaningfully answer better than the
+deterministic check already did. Proven, not just asserted:
+`test_reasoner.py::test_abstention_short_circuit_never_calls_llm`
+constructs a real `Reasoner`, replaces its `_client.chat` with a mock, and
+asserts zero invocations on an abstaining input.
+
+A further structural consequence: `_LLMDecisionDraft.outcome` (the schema
+actually sent to Ollama) is typed `Literal[INCIDENT, WATCH, NO_INCIDENT]`
+— NOT the full `DecisionOutcome` enum. The JSON schema the model receives
+cannot even offer ABSTAIN as an option, so this isn't merely a runtime
+behavior — it's unreachable by construction from the LLM's own output
+space.
+
+## Phase 17: Decision Intelligence — Qwen3-8B Version Pinning (vs. Qwen3.5)
+
+§8/§17/§40 pin "Qwen3-8B" as a specific string, unlike MiniCPM-V's unpinned
+family name (Phase 14) — a more deliberate commitment. Verified via
+`ollama.com/library/qwen3/tags` that `qwen3:8b` (5.2GB, 40K context) is the
+exact current tag, and confirmed actually pulled and runnable in this
+environment (`ollama list`).
+
+**Forward-looking note**: a newer "Qwen3.5" family also exists on Ollama
+as of this phase (0.8b/2b/4b/9b/27b/35b/122b, with vision/tools/thinking
+tag variants, 17.5M pulls) — deliberately NOT used here. This is a silent-
+substitution risk explicitly avoided, per the spec's own instruction: the
+spec's literal string pin governs, not "whatever the newest same-family
+model happens to be by the time this phase is implemented." If a future
+phase or spec revision explicitly wants to move to Qwen3.5, that should be
+a deliberate, documented decision, not something this phase quietly did
+because a newer tag existed.
+
+**Empirical correction of an initial (wrong) research finding**: a first
+web-research pass suggested thinking mode required a separate "-thinking"
+suffixed Ollama tag (seemingly true for some Qwen3.5-family size tiers,
+e.g. `qwen3.5:...-thinking`) and this appeared to contradict the spec's
+Verified Finding #1 claim that thinking mode is runtime-toggleable on a
+single tag. Per this project's own "verify empirically, don't trust
+research alone" discipline (the same standard applied to Phase 14's
+MiniCPM-V investigation), this was tested directly against the actually-
+pulled `qwen3:8b` tag rather than resolved by re-reading more web sources:
+`think=False` produced `response.message.thinking=None` with clean
+schema-conforming `content`; `think=True` produced a real, separate
+`thinking` field with genuine chain-of-thought text, `content` still valid
+per schema in both cases. The spec's Verified Finding #1 was CORRECT for
+this specific tag; the initial web summary was describing a different
+model family's packaging choice, not a limitation of classic Qwen3 dense
+sizes. Logged here as a concrete instance of why this project always
+empirically verifies model behavior before writing adapter code around it.
+
+## Phase 17: Decision Intelligence — Evidence-First Schema Field Ordering
+
+Decision #2: `_LLMDecisionDraft` (`decision_result.py`) declares
+`evidence_cited` BEFORE `outcome` in FIELD DECLARATION ORDER. Ollama's
+grammar-constrained structured generation produces JSON object keys in the
+schema's `properties` declaration order, so this forces the model to
+generate its cited evidence before it is even able to generate its
+conclusion — directly implementing "Evidence Before Reasoning," countering
+the documented tendency of models to reach a conclusion first and
+retrofit citations after. This is a genuine mechanism, not a stylistic
+convention: `test_reasoner.py::test_schema_field_order_evidence_cited_before_outcome`
+inspects the actual generated JSON schema's `properties` dict and asserts
+`evidence_cited`'s key index precedes `outcome`'s.
+
+## Phase 17: Decision Intelligence — EvidencePackage Schema Evolution (1.0 -> 1.1)
+
+Decision #3: this phase is `EvidencePackage`'s first consumer needing
+Phase 11's `PredictiveProjection` (§8 requires narrating "the deterministic
+pressure forecast"), and no "1.0" field carried it. A new nullable
+`predictive_projection_snapshot` JSONB column was added to the EXISTING
+`evidence_packages` table via a new, purely-additive Alembic migration
+(`f2eb5cd87669`) — no existing "1.0" row was retroactively modified.
+`SCHEMA_VERSION` (`evidence_package.py`) bumps to `"1.1"` for newly-built
+packages only. This is the FIRST real exercise of the versioning mechanism
+Phase 16 built specifically to accommodate this kind of additive schema
+evolution — confirmed working as intended: all 19 pre-existing Phase 16
+tests passed unchanged after this extension (the new field is optional,
+defaulting to `None`, and no existing call site needed updating).
+
+The snapshot itself is DELIBERATELY compact — `projected_pressure`,
+`horizon_seconds`, `r_squared` only, never the full `PredictiveProjection`
+dataclass (`window_seconds_used`/`data_points_used`/`frame_number`/
+`timestamp_seconds` are internal fitting diagnostics, not narration
+inputs) — matching Resolution 1's "verbatim means summary" precedent from
+the same phase.
+
+## Phase 17: Decision Intelligence — Reasoned API-Route Extension
+
+Same reasoning as Phase 12/13/16's precedent: §26 does not explicitly name
+`GET /sessions/{id}/decisions` or `GET /decisions/{id}`, but
+`decision_results` is a genuinely persisted, queryable §21 entity with no
+more specific owning route yet (no `Incident` entity exists to nest under
+— §19, roadmap Phase 18). `api/decisions.py` follows the exact
+`_session_not_found()`/`_*_not_found()` 404-helper and
+`success_envelope(...)` pattern already established in `api/risk.py`,
+`api/heatmaps.py`, and `api/evidence.py`.
+
+## Phase 17: Decision Intelligence — DECISION_CONFIDENCE_FLOOR Real-Data Grounding
+
+Decision #4: `DECISION_CONFIDENCE_FLOOR=0.4`, informed by REAL data from
+two sources:
+1. `density.py`'s own discrete confidence tiers (Phase 9): `1.0` (full
+   confidence), `VORONOI_UNAVAILABLE_CONFIDENCE=0.85`,
+   `HIGH_DISAGREEMENT_CONFIDENCE=0.5`, `TOO_FEW_POINTS_CONFIDENCE=0.4` (the
+   worst systematic degradation tier this pipeline ever emits — an
+   estimate from fewer than `MIN_POINTS_FOR_RELIABLE_ESTIMATION=3` tracked
+   points, essentially a guess). `0.4` matches this floor exactly: below
+   it, abstaining is the honest answer, not a generative-reasoning
+   question.
+2. The two REAL `EvidencePackage` rows persisted by Phase 16's own preview
+   script run against `people_clip.mp4` — both `confidence=0.5`, landing
+   at `HIGH_DISAGREEMENT_CONFIDENCE`, ONE tier above this floor. Both
+   would correctly NOT abstain on confidence grounds alone at
+   `DECISION_CONFIDENCE_FLOOR=0.4` — a "high disagreement" degraded-but-real
+   density estimate still supports bounded reasoning, unlike a "too few
+   points" one, which is closer to noise than signal.
+
+UNVALIDATED ENGINEERING JUDGMENT (same category as every other threshold
+in this project's config — candidate for Sprint-0 recalibration): the
+CHOICE to align this floor with `TOO_FEW_POINTS_CONFIDENCE` specifically
+(rather than, say, the midpoint between the two tiers, or
+`HIGH_DISAGREEMENT_CONFIDENCE` itself) is a judgment call, not a derived
+optimum — no ground-truth "was this decision actually correct" labels
+exist yet to tune against.
+
+## OPERATIONAL RISK: LLM Latency Margin
+
+**Real, measured finding from Phase 17's own preview script run — not a
+hypothetical.** A real `Reasoner.reason()` call (CRITICAL-stage synthetic
+cycle, real Qwen3-8B inference, `think=False`) took **85.83 seconds**
+against `LLM_REQUEST_TIMEOUT_SECONDS=90.0` — a margin of only **~4.6%**. A
+SEPARATE call in the same run, under materially identical conditions,
+**actually timed out** and raised `LLMUnavailableError` (correctly — not
+silently swallowed, per §17). This is not a theoretical concern: on this
+project's real hardware, this specific real prompt/response pair came
+within a few seconds of the configured ceiling, and a nearly-identical
+call already crossed it once.
+
+**Why this must not be forgotten before Phase 18 (the Verifier) is
+designed**: per the spec's own Reasoner/Verifier `think` mapping, the
+severity-gated Verifier is expected to make a SECOND call using
+`think=True` (deep reasoning) on the SAME general class of evidence input
+that this phase's `think=False` Reasoner call already measured at 85.83s.
+This project's own direct probe (see the Qwen3-8B version-pinning entry
+above) measured `think=True` taking ~1.7x longer than `think=False` on a
+much smaller, synthetic prompt (61.69s vs 36.14s) — extrapolating that
+ratio to Reasoner-scale prompts suggests a real, plausible risk that a
+`think=True` Verifier call could exceed `LLM_REQUEST_TIMEOUT_SECONDS=90.0`
+outright under the current default, not just approach it.
+
+**Not fixed now — deliberately.** Raising the timeout today would be
+tuning against a sample size of essentially one real measurement, for a
+call pattern (`think=False`) that isn't even the one primarily at risk.
+The right fix is to measure the Verifier's OWN real `think=True` latency
+once Phase 18 actually builds it, and set (or reconsider)
+`LLM_REQUEST_TIMEOUT_SECONDS` — and possibly a SEPARATE, higher timeout
+specifically for `think=True` calls, since conflating the two under one
+shared config value may itself turn out to be the wrong design — against
+THAT real data. Recorded here so Phase 18's design step does not
+rediscover this from scratch or silently inherit a timeout tuned for a
+different, faster call pattern.
+
+## DECISION_CONFIDENCE_FLOOR Boundary Semantics: Inclusive, Not Strict
+
+**Follow-up to the DECISION_CONFIDENCE_FLOOR entry above — a real gap
+found on review, not new work.** The floor (0.4) was deliberately set
+EQUAL to `density.py`'s `TOO_FEW_POINTS_CONFIDENCE` tier — the single
+worst confidence value this pipeline ever systematically produces. The
+ORIGINAL implementation used a strict `<` comparison
+(`confidence < DECISION_CONFIDENCE_FLOOR`), which meant a package sitting
+at EXACTLY that worst-known tier (`confidence == 0.4`) narrowly did NOT
+trigger abstention — `0.4 < 0.4` is `False`. That is backwards: the worst
+known tier is precisely the case abstention exists to catch, per this
+project's own stated philosophy (`abstention.py`'s own docstring: "a
+question a deterministic check can already answer"). Leaving the strictly-
+worst tier to fall through to real LLM reasoning, while everything even
+one ULP better also gets real reasoning, made the floor's own name
+(`FLOOR`) misleading — a "floor" should mean the boundary itself is
+already unacceptable, not the last acceptable value.
+
+**Decision: (b) — fixed, not defended.** `should_abstain()` now uses an
+INCLUSIVE `confidence <= DECISION_CONFIDENCE_FLOOR` comparison. The
+numeric value (0.4) is UNCHANGED — it is still directly grounded in
+`TOO_FEW_POINTS_CONFIDENCE`, per the original real-data reasoning above —
+only the comparison operator changed, which was the minimal, surgical fix
+that preserves that grounding while correctly making the worst-known tier
+trigger abstention. Two new boundary tests added and passing:
+`test_confidence_exactly_at_floor_triggers_abstention` (confidence exactly
+equal to the floor now abstains) and
+`test_confidence_just_above_floor_does_not_abstain_on_confidence`
+(confidence one cent above the floor still gets real reasoning, proving
+the fix didn't over-correct into an off-by-one in the other direction).
+Full `pytest tests/` suite reconfirmed passing after this change.
