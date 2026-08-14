@@ -10,9 +10,11 @@ storage/rois/*
 storage/heatmaps/*
 storage/models/*.pt
 storage/debug_previews/*
+storage/evidence_frames/*
 !storage/videos/.gitkeep
 !storage/frames/.gitkeep
 !storage/rois/.gitkeep
 !storage/heatmaps/.gitkeep
 !storage/models/.gitkeep
 !storage/debug_previews/.gitkeep
+!storage/evidence_frames/.gitkeep

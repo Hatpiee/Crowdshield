@@ -117,6 +117,14 @@ def _heatmap_storage_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _evidence_storage_tmp(tmp_path, monkeypatch):
+    # Same test-isolation pattern as _video_storage_tmp/_heatmap_storage_tmp
+    # above, extended to Phase 16's EVIDENCE_FRAMES_STORAGE_PATH — tests must
+    # never write to the developer's real storage/evidence_frames/.
+    monkeypatch.setattr(settings, "EVIDENCE_FRAMES_STORAGE_PATH", str(tmp_path / "evidence_frames"))
+
+
+@pytest.fixture(autouse=True)
 def _risk_thresholds_from_code_defaults(monkeypatch):
     # Phase 13: RISK_ELEVATED_THRESHOLD / RISK_CRITICAL_THRESHOLD /
     # RISK_INCIDENT_THRESHOLD are PRE-EXISTING keys (Phase 1 placeholders,

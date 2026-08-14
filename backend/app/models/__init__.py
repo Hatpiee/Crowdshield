@@ -5,3 +5,4 @@ from app.models.analysis_session import AnalysisSession, SessionStatus  # noqa: 
 from app.models.processing_run import ProcessingRun, ProcessingRunStatus  # noqa: F401
 from app.models.heatmap import HeatmapSnapshot, HeatmapType  # noqa: F401
 from app.models.risk_event import RiskEvent  # noqa: F401
+from app.models.evidence import EvidencePackage, EvidenceItem  # noqa: F401

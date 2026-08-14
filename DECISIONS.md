@@ -726,3 +726,98 @@ general case), not the retry COUNT. Sample size (n=30, 1 failure) is small
 enough that this rate estimate itself carries real uncertainty — worth
 revisiting if it recurs at a materially different rate under heavier real
 usage.
+
+## Phase 16: Evidence Package — Resolution 1 (verbatim-means-summary)
+
+§16 describes `EvidencePackage` embedding `CrowdMetrics` "verbatim," but
+`CrowdMetrics` carries full per-cell numpy grids (density, pressure,
+congestion, bottleneck, reverse-flow). Embedding raw grids into a JSONB
+column on every persisted package would conflict with this project's own
+storage discipline (§13/§21/§30 — bulk spatial arrays belong on the
+filesystem, never in relational storage).
+
+**Interpretation adopted**: "verbatim" means the SAME summary-level shape
+already built in Phase 14's `CompactCrowdMetricsSummary` (risk_score,
+risk_state, max_density, max_pressure with its units disclaimer,
+congested_cell_fraction, reverse_flow_cell_fraction,
+bottleneck_signal_present, density_confidence) — reused directly
+(`evidence_builder.py` constructs one exactly as `preview_vision_
+intelligence.py` already did) rather than inventing a second, slightly
+different summary shape. `RiskStateResult` gets the same treatment via a
+small new `RiskStateSnapshot` dataclass (frame_number, timestamp_seconds,
+state, risk_score) — the fields relevant to a single point-in-time record,
+not the full dataclass.
+
+## Phase 16: Evidence Package — Resolution 3 (reasoned API-route extension)
+
+§26 names `GET /incidents/{id}/evidence`. `Incident` (§19, roadmap Phase
+18) does not exist yet — Phase 13 already drew a hard, documented line
+between `RiskState.INCIDENT` (a classification label) and a future
+`Incident` database entity, and this phase does not blur that line by
+building any Incident-related code.
+
+Instead, `GET /api/v1/sessions/{id}/evidence` and `GET /api/v1/evidence/{id}`
+were built — not literally named under §26's "Evidence" heading, but a
+direct, reasoned extension of the SAME precedent already established twice
+in this project: Phase 12's `GET /sessions/{id}/heatmaps` and Phase 13's
+`GET /sessions/{id}/risk`, both built for the identical reason (a genuinely
+persisted, queryable resource needs a route, and the owning entity that
+would give it a more specific home doesn't exist yet). `GET /evidence/
+{id}/graph` (§22's Evidence Graph) was NOT built — that remains an
+explicitly separate, later audit-visualization concern.
+
+## Phase 16: Evidence Package — decision #3 (contradiction rules)
+
+The two contradiction rules implemented in `evidence_builder.py`'s
+`_detect_contradictions` —
+(a) `reverse_flow_cell_fraction > 0` with zero VLM observations of category
+`UNUSUAL_MOVEMENT` → `reverse_flow_not_visually_confirmed`, and
+(b) `risk_state` CRITICAL/INCIDENT with an entirely empty (but successful)
+`vision_observations` list → `critical_risk_no_visual_evidence` —
+are a SMALL, explicitly non-exhaustive, engineering-judgment starting set,
+not a claimed-complete taxonomy of everything that could disagree between
+Crowd Intelligence Engine signals and Vision Intelligence observations.
+Both rules only evaluate when the VLM call itself succeeded (a failed call
+produces genuinely MISSING evidence per decision #2, not a contradiction —
+there is nothing to disagree with). Every detected contradiction is
+recorded with `resolution_status="UNRESOLVED"` unconditionally — there is
+no reasoning layer yet (Decision Intelligence, a later phase) able to
+actually resolve anything; this phase can only DETECT and RECORD.
+
+## Phase 16: Evidence Package — decision #4 (model_config_id provenance reuse)
+
+`EvidenceBuilder.build()` reuses the calling session's EXISTING
+`AnalysisSession.model_config_id` (stored since Phase 4, via
+`session_service.get_or_create_model_config`) as the package's provenance
+field — no new provenance mechanism was invented. This is a genuine
+architectural payoff of Phase 4's original design: `model_config_id` was
+added anticipating exactly this kind of downstream "what model versions
+produced this evidence" traceability need, and it required zero new code
+to actually use it here beyond a single `db.get(AnalysisSession,
+session_id).model_config_id` lookup.
+
+## Phase 16: Evidence Package — decision #2 (contributing_signals reuse)
+
+Completeness checking (`evidence_builder.py`'s `_compute_completeness`)
+cross-references `RiskScoreResult.contributing_signals` (Phase 11) —
+any of the four canonical sub-signals (`pressure`, `congestion`,
+`bottleneck`, `reverse_flow`) absent from that list for the current cycle
+(e.g. `bottleneck`, when `BottleneckDetector`'s rolling window hasn't
+filled yet) is surfaced as `"{signal}_signal"` in the package's `missing`
+list. This is a genuine, valuable reuse of Phase 11's already-built
+tracking — no new "is this signal available" logic was invented; the
+information already existed and simply wasn't being surfaced to a
+consumer needing to know about it until now.
+
+## Phase 16: Evidence Package — Resolution 6 (time window simplification)
+
+The `frame_number`/`timestamp_seconds` on an `EvidencePackageResult`
+represent a SINGLE point (the triggering frame, taken from
+`TriggerDecision`), not a genuine multi-frame span, even though §16
+describes a "time window." Deciding how many frames to bundle around a
+trigger moment (and at what sampling cadence) is arguably itself an
+orchestration-level decision that doesn't exist yet (no
+`AnalysisOrchestrator`, per this phase's explicit scope boundary) — this
+simplification is deliberate, not an oversight, and is a reasonable
+starting point to extend later rather than a design that needs to be
+revisited from scratch.

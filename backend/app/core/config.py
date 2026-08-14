@@ -336,6 +336,13 @@ class Settings(BaseSettings):
     # placeholder-turned-real default; not empirically tuned (no VLM cost
     # model exists yet to optimize against).
     FALLBACK_ANALYSIS_INTERVAL: int = 60
+    # Phase 16 (Evidence Package, decision #5): filesystem path where the
+    # representative frame and ROI crop images backing each persisted
+    # EvidencePackage are stored. Same cwd-relative resolution pattern as
+    # VIDEO_STORAGE_PATH/HEATMAP_STORAGE_PATH — see evidence_service.py's
+    # get_storage_dir. This is the FIRST persistence of these image types to
+    # disk; Phase 14's VLM calls were purely in-memory.
+    EVIDENCE_FRAMES_STORAGE_PATH: str = "storage/evidence_frames"
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
