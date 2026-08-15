@@ -1035,3 +1035,167 @@ equal to the floor now abstains) and
 (confidence one cent above the floor still gets real reasoning, proving
 the fix didn't over-correct into an off-by-one in the other direction).
 Full `pytest tests/` suite reconfirmed passing after this change.
+
+## Phase 18: Verifier — Step 0: Real Verifier Latency Measurement
+
+**Full methodology, done BEFORE any Verifier class code was written, per
+this phase's own explicit instruction to measure rather than guess.**
+
+1. Fetched a REAL, already-persisted Phase 17 EvidencePackage+DecisionResult
+   pair directly from Postgres via psql (`evidence_package_id=
+   52e0b423-de06-4e2a-86f0-b9b1325f6c43`, `decision_id=
+   f8e889a7-b700-4dcc-b26d-27a9e8c21030` — a real `outcome=INCIDENT`
+   decision from Phase 17's own preview script run against
+   `people_clip.mp4`, not a toy/synthetic example).
+2. Wrote `verifier.py`'s `_build_verification_prompt()` FIRST, in
+   isolation, before any other Verifier code — reconstructed the real
+   EvidencePackageResult/DecisionResult objects from the fetched row data
+   and called this function to build the ACTUAL prompt the real Verifier
+   would send.
+3. Ran this real prompt against `qwen3:8b` with `think=True` 5 times,
+   recording real wall-clock latency each time (a generous 300s client-side
+   timeout was used for the PROBE ITSELF, so a genuinely slow call
+   wouldn't be cut off before it could be measured).
+4. Raw latencies (seconds): **213.50, 199.28, 182.83, 187.12, 177.76**
+   (max=213.50s, mean=192.10s, n=5). All 5 produced valid, schema-
+   conforming responses — zero validation failures.
+5. Per the explicit instruction to use the OBSERVED MAXIMUM (not the
+   mean — Phase 17's own near-miss came from underestimating tail
+   latency, not average latency) plus a 20% safety margin:
+   `213.50 * 1.2 = 256.20`, rounded up to **`VERIFIER_REQUEST_TIMEOUT_SECONDS
+   = 260.0`**. Notably NOT reused from `LLM_REQUEST_TIMEOUT_SECONDS=90.0` —
+   that value was measured for the Reasoner's `think=False` fast path, a
+   materially different (much faster) call pattern; conflating the two
+   would have silently under-provisioned the Verifier from the start,
+   exactly the risk Phase 17's own follow-up flagged as something "must
+   not be forgotten before Phase 18 is designed."
+6. `num_predict` investigation (item 5): confirmed via `ollama._types.Options`
+   that `num_predict` is a real, documented parameter bounding TOTAL
+   generated tokens (thinking + final content, one combined generation
+   stream). Observed `eval_count` (total generated tokens) across all 5
+   timing trials: 184, 239, 224, 253, 221 — tightly clustered, max 253. A
+   SIXTH dedicated confirmation call was made with `num_predict=1000` set
+   (~4x the observed max): it completed in 173.53s (within normal
+   variance) and produced a genuinely valid, high-quality response (used
+   only 203 tokens) — proving this cap does NOT truncate or degrade real
+   output at this value. Added as `VERIFIER_MAX_THINKING_TOKENS=1000`, a
+   GENEROUS backstop against pathological runaway generation (e.g. a
+   repetition loop), not an active constraint expected to bind under
+   normal operation — the "sensible, verifiable lever" Step 0 asked for,
+   confirmed empirically rather than guessed.
+
+## Phase 18: Verifier — Decision A (Deterministic-First Verification)
+
+Extends Phase 17's own "Deterministic Before Generative" principle
+(originally applied to abstention) to verification. Of §18's six named
+checks, TWO are fully deterministic and computable directly from already-
+known fields with zero semantic judgment required:
+`confidence_consistency` (`decision.confidence` must EXACTLY equal
+`evidence_package.confidence` — a pure equality check) and the EXISTENCE
+portion of `evidence_grounding` (every citation string must be a real
+`compact_metrics` field name or a real `observation_id` — a pure set-
+membership check). Both run in plain Python (`verification_prechecks.py`)
+BEFORE any LLM call; if EITHER fails, `Verifier.verify()` short-circuits
+to `passed=False` WITHOUT calling the LLM at all — proven, not just
+asserted: `test_verifier.py::test_deterministic_short_circuit_never_calls_llm`
+mocks `_client.chat` and asserts zero invocations.
+
+A distinct, explicitly-flagged case: if `confidence_consistency` EVER
+fails in real operation, that is a REAL BUG in Phase 17's propagation code
+(confidence is supposed to be copied verbatim, never recomputed) — NOT a
+model behavior disagreement. `Verifier.verify()`'s own issue message says
+so explicitly ("CONFIDENCE CONSISTENCY FAILURE (indicates a Phase 17
+propagation BUG, not model behavior)") so this is never miscategorized as
+"the LLM disagreed" during triage.
+
+Only the remaining FOUR checks (reasoning_consistency,
+contradiction_handling, recommendation_consistency, unsupported_claims) —
+which genuinely require semantic judgment a Python assertion cannot
+provide — reach the real `think=True` LLM call.
+
+## Phase 18: Verifier — Decision B (New Table Exists to PRESERVE Immutability, Not Because No ERD Entity Exists)
+
+**Explicitly contrasted with Phase 12/13/16/17's precedent.** Every prior
+phase's "new table beyond the literal ERD" justification was "no more
+specific entity exists yet for this genuinely-new, genuinely-persisted
+concept" (heatmap_snapshots, risk_events, evidence_packages/evidence_items,
+decision_results). `verification_results` exists for a DIFFERENT reason:
+Phase 17 already built and tested a hard immutability guarantee on
+`decision_results` (no update/modify function anywhere in
+`decision_service.py`, proven by a source-level test) — adding verification
+data via an UPDATE to an existing `decision_results` row would violate
+that already-established, already-tested constraint. A separate table,
+written to via a ONE-WAY FK to `decision_results.id`, means verification is
+always a fresh INSERT referencing an already-existing decision, never a
+mutation of it. `decision_results` DOES gain one new column
+(`superseded_decision_id`) via this phase's migration, but it is NULLABLE
+and populated ONLY at INSERT time on a brand-new row (Decision C) — every
+Phase 17 row and every non-superseding Phase 18 row has it as NULL,
+unconditionally, confirmed via psql after the migration ran (3/3 existing
+rows unchanged).
+
+## Phase 18: Verifier — Decision C (Failed Verification Supersedes, Never Overwrites)
+
+When verification fails (deterministic short-circuit OR
+`overall_verdict=FLAGGED`), the ORIGINAL `decision_results` row is left
+EXACTLY as it was. `verification_service.py`'s `run_verification_if_warranted`
+constructs a SECOND, NEW `DecisionResult` (`outcome=ABSTAIN`,
+`abstention_reason` referencing the original decision and the failure's
+issues, `superseded_decision_id` pointing at the original) and persists it
+via Phase 17's EXISTING `decision_service.persist_decision_result` —
+reused directly, not duplicated. Both rows remain permanently visible: the
+attempted high-severity decision AND the safe fallback that superseded
+it. This is §16's "additional evidence creates additional versions, never
+a silent rewrite" philosophy, now applied to decisions.
+`test_verification_persistence.py::test_original_decision_row_unchanged_after_failed_verification`
+re-fetches and field-by-field compares the original row before/after a
+failed verification to prove this concretely, not just by design intent.
+
+## Phase 18: Verifier — Decision D (Severity Gate Lives in the Caller)
+
+Consistent with how `TriggerEngine` (not `VisionModel`) owns "should this
+even run" throughout this project, `Verifier.verify()` itself never
+inspects `decision.outcome` — `verification_gate.py`'s `should_verify()`
+(returning `True` only for `outcome==INCIDENT`, per §8's "highest-priority
+escalations only") is a separate function the CALLER
+(`verification_service.py`) checks before ever constructing a Verifier
+call. This keeps `Verifier.verify()` a pure, always-does-real-work
+function — easier to test and reason about in isolation — while keeping
+the "should this run at all" policy decision in the orchestration layer,
+matching this project's established separation of concerns.
+
+## FORWARD NOTE: Verifier Latency vs. Future Orchestration
+
+**Real, measured finding — not a hypothetical.** Step 0's real
+measurements set `VERIFIER_REQUEST_TIMEOUT_SECONDS=260.0` — meaning a
+single, legitimate `Verifier.verify()` call can run for several minutes
+(observed real latencies: 177.76s-213.50s across 5 trials, one real
+production-shaped call at 179.38s) before this project even considers it
+"unavailable." This is a genuinely long-lived, blocking operation by this
+system's own standards — nothing else in the pipeline through Phase 18
+takes anywhere close to this long.
+
+**The unanswered question, deliberately out of THIS phase's scope**: no
+`AnalysisOrchestrator` exists yet (explicit scope boundary, every phase
+since Phase 16). Nothing in this project currently decides what happens if
+a NEW trigger condition arises (a fresh `TriggerDecision`, potentially
+another `outcome=INCIDENT` decision needing its OWN verification) while a
+PREVIOUS cycle's `Verifier.verify()` call is still in flight, several
+minutes deep. Plausible options an orchestrator could choose, none
+implemented or decided here: queue the new trigger behind the in-flight
+verification; drop/skip it (with what evidence-loss consequence?); run
+both verifications concurrently (what does concurrent Ollama load do to
+EITHER call's latency — does it push a call past its own timeout?); or
+block/suppress new triggers entirely until the in-flight one resolves
+(risking exactly the kind of "an incident happened in the queueing gap"
+scenario safety systems exist to catch).
+
+**Why this must not be rediscovered from scratch**: same pattern as Phase
+17's own "OPERATIONAL RISK: LLM Latency Margin" note, which this phase's
+own Step 0 was written specifically to act on before it caused a real
+failure. This note exists so that whichever future phase actually designs
+`AnalysisOrchestrator` starts from "the Verifier can legitimately occupy
+this system for minutes at a time, plan concurrency/queueing accordingly"
+rather than discovering that constraint only after building something that
+assumes near-instant severity-gated checks. Not fixed now — deliberately;
+there is no orchestrator yet for this concern to even attach to.

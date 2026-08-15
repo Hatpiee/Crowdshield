@@ -43,6 +43,14 @@ class DecisionResultRow(Base):
     abstention_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     binding_constraint: Mapped[str] = mapped_column(String, nullable=False)
+    # Phase 18, Decision B/C: self-referencing, NULLABLE. Populated ONLY at
+    # INSERT time on a brand-new superseding ABSTAIN row (never by updating
+    # an existing row) — points at the ORIGINAL decision this row
+    # supersedes after a failed verification. Every Phase 17 row and every
+    # non-superseding Phase 18 row has this as NULL, unconditionally.
+    superseded_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("decision_results.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

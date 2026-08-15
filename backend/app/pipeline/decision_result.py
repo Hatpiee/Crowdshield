@@ -130,6 +130,12 @@ class DecisionResult(BaseModel):
     # docstring's structural guarantee).
     confidence: float = Field(ge=0.0, le=1.0)
     binding_constraint: str
+    # Phase 18, Decision C: set ONLY by verification_service.py when
+    # constructing a brand-new superseding ABSTAIN DecisionResult after a
+    # failed verification — points at the ORIGINAL decision_id this one
+    # supersedes. None on every Phase 17-produced decision and on every
+    # non-superseding decision.
+    superseded_decision_id: Optional[uuid.UUID] = None
 
     @model_validator(mode="after")
     def _validate_recommendation_null_when_inappropriate(self) -> "DecisionResult":

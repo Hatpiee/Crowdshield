@@ -97,6 +97,8 @@ def test_no_update_function_exists_for_persisted_rows():
         "persist_decision_result",
         "get_session_decisions",
         "get_decision_result",
+        # Phase 18 addition: a read-only helper, not an update path.
+        "get_verification_for_decision",
     }
 
 

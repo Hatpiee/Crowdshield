@@ -379,6 +379,41 @@ class Settings(BaseSettings):
     # degraded-but-real estimate still supports bounded reasoning, unlike a
     # "too few points" one.
     DECISION_CONFIDENCE_FLOOR: float = 0.4
+    # Phase 18 (Verifier, Step 0): mirrors LLM_MAX_RETRIES's naming.
+    VERIFIER_MAX_RETRIES: int = 2
+    # Phase 18 (Verifier, Step 0): NOT guessed and NOT reused from
+    # LLM_REQUEST_TIMEOUT_SECONDS (that value was measured for the
+    # Reasoner's think=False fast path — a materially different, faster
+    # call pattern; see DECISIONS.md's "OPERATIONAL RISK: LLM Latency
+    # Margin" entry from Phase 17's own follow-up). Measured directly: 5
+    # real think=True Qwen3-8B calls against a REAL, already-persisted
+    # Phase 17 EvidencePackage+DecisionResult pair (evidence_package_id=
+    # 52e0b423-de06-4e2a-86f0-b9b1325f6c43), using the actual
+    # _build_verification_prompt() this module's Verifier uses (not a toy
+    # prompt). Raw latencies: 213.50s, 199.28s, 182.83s, 187.12s, 177.76s
+    # (max=213.50s, mean=192.10s). Per Step 0's explicit instruction, the
+    # OBSERVED MAXIMUM (not the mean — Phase 17's own near-miss came from
+    # underestimating tail latency) plus a 20% safety margin:
+    # 213.50 * 1.2 = 256.20, rounded up to 260.0.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 260.0,
+    # informed by REAL measured data (n=5) — see DECISIONS.md's "Step 0:
+    # Real Verifier Latency Measurement" entry for full methodology.
+    VERIFIER_REQUEST_TIMEOUT_SECONDS: float = 260.0
+    # Phase 18 (Verifier, Step 0 item 5): Ollama's `options.num_predict`
+    # bounds TOTAL generated tokens (thinking + final content combined, one
+    # generation stream) — a real, documented, verifiable lever, not a
+    # guess. Empirically investigated before adopting: across all 6 real
+    # think=True calls made during Step 0 (the 5 timing trials plus one
+    # dedicated confirmation call with num_predict=1000 set), observed
+    # eval_count (total generated tokens) ranged 184-253 — the
+    # num_predict=1000 call itself completed in 173.53s with a genuinely
+    # valid, high-quality response (used only 203 tokens), proving this
+    # cap does NOT truncate or degrade real output at this value. Set as a
+    # GENEROUS backstop (~4x the observed max) against pathological
+    # runaway generation (e.g. a repetition loop) — not an active
+    # constraint expected to bind under normal operation.
+    VERIFIER_MAX_THINKING_TOKENS: int = 1000
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")

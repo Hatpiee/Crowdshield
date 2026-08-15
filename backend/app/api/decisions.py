@@ -7,8 +7,10 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.response import error_envelope, success_envelope
 from app.models.analysis_session import AnalysisSession
+from app.models.decision import DecisionResultRow
 from app.models.user import User
-from app.schemas.decision import DecisionResultRead, SessionDecisionsRead
+from app.models.verification import VerificationResultRow
+from app.schemas.decision import DecisionResultRead, SessionDecisionsRead, VerificationResultRead
 from app.services import decision_service
 
 # Same reasoned-exception pattern as Phase 12/13/16 (§26 doesn't explicitly
@@ -30,6 +32,49 @@ def _decision_not_found() -> HTTPException:
     )
 
 
+def _verification_to_read(row: VerificationResultRow) -> VerificationResultRead:
+    llm_checks = row.llm_checks or {}
+    return VerificationResultRead(
+        id=row.id,
+        passed=row.passed,
+        confidence_consistency_ok=row.confidence_consistency_ok,
+        evidence_grounding_existence_ok=row.evidence_grounding_existence_ok,
+        # None (not False) when the LLM was never called — the four
+        # LLM-checked dimensions genuinely have no answer, per Decision A.
+        reasoning_consistency_ok=llm_checks.get("reasoning_consistency_ok"),
+        contradiction_handling_ok=llm_checks.get("contradiction_handling_ok"),
+        recommendation_consistency_ok=llm_checks.get("recommendation_consistency_ok"),
+        unsupported_claims_ok=(
+            None if "unsupported_claims_found" not in llm_checks
+            else not llm_checks["unsupported_claims_found"]
+        ),
+        issues_found=row.issues_found,
+        superseding_decision_id=row.superseding_decision_id,
+        created_at=row.created_at,
+    )
+
+
+def _decision_to_read(
+    row: DecisionResultRow, verification_row: VerificationResultRow | None = None
+) -> DecisionResultRead:
+    return DecisionResultRead(
+        id=row.id,
+        evidence_package_id=row.evidence_package_id,
+        evidence_cited=row.evidence_cited,
+        outcome=row.outcome,
+        reasoning_summary=row.reasoning_summary,
+        recommendation=row.recommendation,
+        recommendation_rationale=row.recommendation_rationale,
+        projection_narrative=row.projection_narrative,
+        abstention_reason=row.abstention_reason,
+        confidence=row.confidence,
+        binding_constraint=row.binding_constraint,
+        superseded_decision_id=row.superseded_decision_id,
+        verification=_verification_to_read(verification_row) if verification_row is not None else None,
+        created_at=row.created_at,
+    )
+
+
 @router.get("/sessions/{session_id}/decisions")
 def list_session_decisions(
     session_id: UUID,
@@ -40,9 +85,7 @@ def list_session_decisions(
         raise _session_not_found()
 
     rows = decision_service.get_session_decisions(db, session_id)
-    response = SessionDecisionsRead(
-        items=[DecisionResultRead.model_validate(row) for row in rows]
-    )
+    response = SessionDecisionsRead(items=[_decision_to_read(row) for row in rows])
     return success_envelope(response.model_dump(mode="json"))
 
 
@@ -56,4 +99,5 @@ def get_decision_result(
     if row is None:
         raise _decision_not_found()
 
-    return success_envelope(DecisionResultRead.model_validate(row).model_dump(mode="json"))
+    verification_row = decision_service.get_verification_for_decision(db, decision_id)
+    return success_envelope(_decision_to_read(row, verification_row).model_dump(mode="json"))
