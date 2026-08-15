@@ -11,6 +11,7 @@ from app.models.model_config import ModelConfig
 from app.models.processing_run import ProcessingRun
 from app.models.user import User
 from app.models.video import VideoAsset
+from app.schemas.crowd_metrics_snapshot import CrowdMetricsSnapshotRead, CrowdMetricsTimeseriesRead
 from app.schemas.session import (
     ModelConfigRead,
     ProcessingRunRead,
@@ -19,7 +20,8 @@ from app.schemas.session import (
     SessionRead,
     SessionStatusRead,
 )
-from app.services import session_service
+from app.pipeline.crowd_pressure import UNITS_DISCLAIMER as PRESSURE_UNITS_DISCLAIMER
+from app.services import crowd_metrics_snapshot_service, session_service
 from app.services.orchestration_launcher import launch_session_processing
 from app.services.session_service import InvalidStateTransitionError, VideoNotFoundError
 
@@ -218,11 +220,42 @@ def get_session_status(
         raise _not_found()
 
     latest_run = _get_latest_processing_run(db, session_id)
+    latest_snapshot = crowd_metrics_snapshot_service.get_latest_snapshot(db, session_id)
     status_read = SessionStatusRead(
         id=session.id,
         status=session.status,
         latest_processing_run=(
             ProcessingRunRead.model_validate(latest_run) if latest_run else None
         ),
+        latest_risk_score=latest_snapshot.risk_score if latest_snapshot else None,
+        latest_risk_state=latest_snapshot.risk_state if latest_snapshot else None,
     )
     return success_envelope(status_read.model_dump(mode="json"))
+
+
+@router.get("/{session_id}/crowd-metrics-timeseries")
+def get_crowd_metrics_timeseries(
+    session_id: UUID,
+    limit: int = Query(
+        crowd_metrics_snapshot_service.DEFAULT_TIMESERIES_LIMIT, ge=1, le=20000
+    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Step 3: a new, justified route — genuinely new, real, queryable
+    # time-series data (Gap 1) with no existing route to extend, same
+    # reasoning already applied since Phase 12 (heatmaps got their own
+    # route for the same kind of reason).
+    session = db.get(AnalysisSession, session_id)
+    if session is None:
+        raise _not_found()
+
+    snapshots = crowd_metrics_snapshot_service.get_session_crowd_metrics_timeseries(
+        db, session_id, limit=limit
+    )
+    timeseries_read = CrowdMetricsTimeseriesRead(
+        session_id=session_id,
+        pressure_units_disclaimer=PRESSURE_UNITS_DISCLAIMER,
+        items=[CrowdMetricsSnapshotRead.model_validate(row) for row in snapshots],
+    )
+    return success_envelope(timeseries_read.model_dump(mode="json"))

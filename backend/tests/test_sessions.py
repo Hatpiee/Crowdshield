@@ -226,10 +226,17 @@ def test_get_session_status_lightweight_shape(client, auth_headers, make_video, 
     assert response.status_code == 200
     body = response.json()
     data = body["data"]
-    assert set(data.keys()) == {"id", "status", "latest_processing_run"}
+    # Phase 21, Step 3: latest_risk_score/latest_risk_state were added to
+    # this response (nullable, no CrowdMetricsSnapshot exists yet for a
+    # session that never started).
+    assert set(data.keys()) == {
+        "id", "status", "latest_processing_run", "latest_risk_score", "latest_risk_state",
+    }
     assert data["id"] == created["id"]
     assert data["status"] == "CREATED"
     assert data["latest_processing_run"] is None
+    assert data["latest_risk_score"] is None
+    assert data["latest_risk_state"] is None
 
     # Phase 20: start_session() is called directly via the SERVICE layer
     # here (not through POST /start) — see

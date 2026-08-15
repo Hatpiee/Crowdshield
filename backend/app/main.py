@@ -10,6 +10,7 @@ from app.api.heatmaps import router as heatmaps_router
 from app.api.incidents import router as incidents_router
 from app.api.risk import router as risk_router
 from app.api.sessions import router as sessions_router
+from app.api.system import router as system_router
 from app.api.videos import router as videos_router
 from app.core.config import settings
 from app.core.response import error_envelope, success_envelope
@@ -59,6 +60,7 @@ app.include_router(risk_router, prefix="/api/v1")
 app.include_router(evidence_router, prefix="/api/v1")
 app.include_router(decisions_router, prefix="/api/v1")
 app.include_router(incidents_router, prefix="/api/v1")
+app.include_router(system_router, prefix="/api/v1")
 
 
 @app.get("/health")

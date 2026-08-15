@@ -9,3 +9,4 @@ from app.models.evidence import EvidencePackage, EvidenceItem  # noqa: F401
 from app.models.decision import DecisionResultRow  # noqa: F401
 from app.models.verification import VerificationResultRow  # noqa: F401
 from app.models.incident import Incident, IncidentEvidence, OperatorAction  # noqa: F401
+from app.models.crowd_metrics_snapshot import CrowdMetricsSnapshot  # noqa: F401

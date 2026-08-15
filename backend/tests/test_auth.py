@@ -96,6 +96,28 @@ def test_me_with_expired_or_invalid_token(client, test_user):
     assert response.status_code == 401
 
 
+def test_me_with_old_style_token_missing_purpose_claim_is_still_accepted(client, test_user):
+    # Phase 21 follow-up: create_access_token now adds a "purpose": "access"
+    # claim, but every token issued before this phase (including any
+    # session live in a running app at deploy time) has NO purpose claim at
+    # all. decode_access_token must treat a MISSING claim as the default
+    # access case for backward compatibility, not reject it.
+    user, _ = test_user
+    old_style_payload = {
+        "sub": str(user.id),
+        "role": user.role.value,
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+    }
+    old_style_token = jwt.encode(old_style_payload, settings.JWT_SECRET_KEY, algorithm=ALGORITHM)
+
+    response = client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {old_style_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["email"] == user.email
+
+
 def test_require_role_rejects_operator_allows_admin(make_user):
     operator = make_user("operator2@example.com", "pw", role=Role.OPERATOR)
     admin = make_user("admin2@example.com", "pw", role=Role.ADMIN)

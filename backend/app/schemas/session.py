@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.analysis_session import SessionStatus
 from app.models.processing_run import ProcessingRunStatus
+from app.pipeline.risk_state import RiskState
 
 
 class SessionCreate(BaseModel):
@@ -66,5 +67,13 @@ class SessionStatusRead(BaseModel):
     id: uuid.UUID
     status: SessionStatus
     latest_processing_run: ProcessingRunRead | None = None
+    # Phase 21 (Step 3): from the most recent CrowdMetricsSnapshot, if any
+    # exist yet — nullable so a session with zero snapshots so far (e.g.
+    # QUEUED, or PROCESSING but not yet past its first checkpoint) reports
+    # this honestly as "no data yet," never a fabricated 0/NORMAL. This is
+    # the primary polling payload the dashboard's "current risk" and
+    # "processing progress" widgets consume together in ONE request.
+    latest_risk_score: float | None = None
+    latest_risk_state: RiskState | None = None
 
     model_config = ConfigDict(from_attributes=True)

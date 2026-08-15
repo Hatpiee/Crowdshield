@@ -1671,3 +1671,159 @@ underlying constraint: this system's real inference cost is not free to
 ignore, whether encountered one cycle at a time or as cumulative load
 across a long combined run. Both entries should be read together when
 §35's Sprint-0 full-system CPU/load test is eventually scoped.
+
+## Phase 21: Dashboard Integration (first half) — Two Real Gaps Closed
+
+**Gap 1 — crowd_metrics_snapshots retrofit.** §21's ERD names a
+"crowd_metrics" time-series entity that was never built (nothing needed to
+read it until now). Added `CrowdMetricsSnapshot`, FLATTENED columns (not
+JSONB) since this data exists specifically to be queried/charted in TIME
+ORDER — mirrors Phase 16's evidence_items precedent for the identical
+reason. Populated by retrofitting the EXISTING `AnalysisOrchestrator`
+(Phase 20) at its ALREADY-EXISTING `PROGRESS_UPDATE_INTERVAL_FRAMES`
+checkpoint — no new interval, no per-frame writes (§21). Real, measured
+cadence (Definition of Done item 3): a real run against `people_clip.mp4`
+produced exactly 20 snapshot rows at frame_number diffs of exactly 30
+(the configured interval), timestamp_seconds ~1.0s apart, confirmed via
+direct psql query. All 8 pre-existing Phase 20 orchestrator tests pass
+unchanged after this retrofit.
+
+`max_pressure`'s units disclaimer is deliberately NOT stored per-row — a
+fixed, already-known constant string (`crowd_pressure.UNITS_DISCLAIMER`),
+attached ONCE by the `/crowd-metrics-timeseries` route, never duplicated
+across what could be thousands of rows per session.
+
+**Migration note: reusing an existing native Postgres enum type across a
+second table.** `crowd_metrics_snapshots.risk_state` reuses Phase 13's
+`risk_state` enum (already owned by `risk_events`), the first time this
+project has done so. Alembic's autogenerate does not know the type
+already exists and emits a plain `sa.Enum(..., name="risk_state")` for the
+new column, which tries to `CREATE TYPE risk_state` again and fails
+(`DuplicateObject`) since `risk_events` already created it. Fixed by
+hand-editing the migration to `postgresql.ENUM(..., create_type=False)`.
+`downgrade()` correspondingly does NOT drop the enum type, since
+`risk_events` still depends on it. Any FUTURE table that reuses this (or
+any other already-defined) native enum must repeat this same
+`create_type=False` fix by hand — autogenerate will not catch it.
+
+**Gap 2 — video streaming with short-lived, single-purpose tokens.**
+Deferred three times (Phases 3, 12, 16); closed here because an HTML5
+`<video>` tag cannot attach a Bearer header, so the existing JWT-in-header
+pattern doesn't work for media elements. `GET /videos/{id}/stream-token`
+(normal Bearer auth) issues a short-lived token; `GET /videos/{id}/stream`
+(NOT behind `get_current_user` — a `<video>` tag can't authenticate that
+way) validates it via a required `?token=` query parameter instead.
+
+**Real security hardening required, not anticipated at the start of this
+phase**: both token types share `JWT_SECRET_KEY` and algorithm, so without
+a distinguishing marker, a stream token (which also carries a `"sub"`
+claim) would have been silently accepted by `get_current_user` as a normal
+access token, and vice versa. Fixed by adding an explicit `"purpose"`
+claim to BOTH token types — `"access"` (added retroactively to Phase 2's
+`create_access_token`/`decode_access_token`) and `"stream"`
+(`stream_token.py`, plus a `"video_id"` claim access tokens never carry) —
+each validator now rejects a token whose purpose doesn't match. Verified
+in both directions:
+`test_stream_token.py::test_a_normal_access_token_is_rejected_as_a_stream_token`
+and `test_a_stream_token_is_rejected_as_a_normal_access_token`. This is a
+real, if narrow, security-relevant change to already-shipped Phase 2 code
+— logged here per this project's "report deviations honestly" standard,
+not silently folded into "just add a new token type."
+
+**Follow-up bug found and fixed: the first version of this check was NOT
+backward compatible.** `decode_access_token` initially rejected via
+`payload.get("purpose") != "access"` — a MISSING claim (`None`) fails that
+comparison exactly like an explicitly wrong one, meaning every token
+issued before this phase (every session live in a running app at deploy
+time) would have started failing authentication the instant this code
+went live. Fixed to `payload.get("purpose", "access") != "access"`, so a
+missing claim defaults to the access case and only an explicit, different
+purpose (e.g. `"stream"`) is rejected. Regression test added:
+`test_auth.py::test_me_with_old_style_token_missing_purpose_claim_is_still_accepted`
+constructs a token with no `purpose` claim at all (bypassing
+`create_access_token` entirely) and confirms `/auth/me` still accepts it.
+
+Range-request support (206 Partial Content, correct `Content-Range`, real
+partial byte content) is provided by Starlette's own `FileResponse`
+(verified directly present and correctly implemented in the installed
+version via source inspection) rather than hand-rolled — but NOT trusted
+blindly: `test_video_streaming.py::test_stream_with_range_header_returns_206_with_correct_byte_slice`
+compares the actual returned bytes against the real expected slice of the
+real file on disk, not just the status code.
+
+**`STREAM_TOKEN_EXPIRE_MINUTES` default: 30 minutes.** Chosen to
+comfortably exceed this project's longest real session-processing
+duration observed so far (the Phase 20/21 live verification runs complete
+in well under 5 minutes) plus realistic operator viewing time for a
+completed session's video, while still being short-lived relative to the
+main `ACCESS_TOKEN_EXPIRE_MINUTES` — a leaked stream-token URL (e.g. via
+browser history, a shared screenshot, or referrer leakage) is scoped to
+one specific video and expires quickly, unlike a full access token. Not
+tied to any measured requirement; a reasonable, documented default that
+can be revisited if a real session or viewing pattern exceeds it.
+
+**Deliberate, narrow exception to the JSON-envelope convention**: every
+error response on `GET /videos/{id}/stream` (401/404) is a bare HTTP
+status with no envelope body — a `<video>` tag cannot parse or display a
+JSON error body regardless of its shape, so there is nothing to gain from
+one. Every OTHER route in this app still uses the standard envelope.
+
+**§26's missing `GET /system/status` route** (distinct from Phase 1's
+`GET /health`, which stays separately unauthenticated and unchanged) was
+also added, implementing 3 independent checks (database, Ollama, count of
+PROCESSING sessions) — each wrapped in its own try/except so one check's
+real failure can never mask or crash another's, verified by
+`test_system_status.py`'s independence tests (route-level mocked-outage
+tests plus two checks-in-isolation tests against a genuinely broken DB
+transaction and a genuinely unreachable Ollama port, not just mocks).
+
+## Phase 21: Dashboard — Documented Judgment Calls
+
+- **Video-timestamp synchronization is deliberately INCREMENTAL** (new
+  implementation decision #3): only the "current risk" badge is wired to
+  the video player's playback timestamp this phase — implemented as plain
+  lifted `useState` in `LiveMonitor.tsx`, not React Context, since there is
+  exactly one consumer. Promoting to Context is a small, straightforward
+  change once Phase 22's spatial widgets need the same shared value; doing
+  it now would be premature abstraction for a single consumer. Real,
+  screenshotted proof this actually works: seeking the video from 0:00 to
+  0:05 changed the Current Risk badge from 19.2 (NORMAL) to 12.0 (NORMAL)
+  — the nearest-timestamp lookup genuinely re-runs client-side from the
+  already-fetched timeseries array, no extra network request per
+  scrub/seek.
+- **Risk trend chart color**: a single consistent teal accent line
+  (documented judgment call, decision #5's own "your judgment" allowance)
+  rather than a per-segment value-based gradient — real complexity for a
+  first cut; not ruled out for Phase 22.
+- **Current-risk badge color mapping**: NORMAL=teal (this project's own
+  established "calm/safe" meaning for that accent), ELEVATED/CRITICAL/
+  INCIDENT escalate through amber tones ending at the brand's own amber for
+  CRITICAL. INCIDENT's mapping exists for completeness only — Phase 13's
+  own `RiskState.INCIDENT` remains structurally unreachable, so this
+  dashboard shell never actually renders it.
+- **Auth token reaches client components via a server-to-client prop**
+  (the dashboard page's own `auth()` call, passed down to `LiveMonitor`),
+  not `useSession()`/`SessionProvider` — this project has never set up a
+  `SessionProvider` anywhere, and the substance exposed is identical
+  either way (the session callback in `auth.ts` already puts
+  `access_token` on the client-visible session object) — avoids adding a
+  new global wrapper for one page's worth of client components.
+- **Session-picker empty state was NOT screenshotted against a live
+  server**, honestly reported as a real testing limitation rather than
+  worked around destructively: this project's real dev database already
+  contains many genuine sessions from this project's own extensive
+  verification work across Phases 20-21, and `GET /sessions` has no
+  per-user filter (by design, since inception) — there is no way to
+  produce a genuinely empty list without deleting real data, which this
+  session's own standing discipline about destructive actions rules out.
+  The empty-state branch (`SessionPicker.tsx`'s `sessions.length === 0`
+  check, linking to `/sessions`) was verified by code review instead. The
+  POPULATED state was screenshotted against real data, per the Definition
+  of Done.
+- **Timeseries downsampling**: none applied by default
+  (`crowd_metrics_snapshot_service.DEFAULT_TIMESERIES_LIMIT=5000` exists as
+  a defensive cap only) — at ~1 row/second, even a 30-minute session is
+  only ~1800 rows, well within what a browser-rendered line chart handles
+  natively. Not a real-world-triggered need yet; the `limit` query param
+  exists for the route to accept a caller override without duplicating the
+  constant, should a future long-running session make it necessary.

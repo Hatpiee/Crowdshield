@@ -474,6 +474,15 @@ class Settings(BaseSettings):
     # frame of a long video). Not benchmarked against real dashboard
     # scrubbing UX — a candidate for Sprint-0 (§35) recalibration.
     HEATMAP_GENERATION_INTERVAL_SECONDS: float = 5.0
+    # Phase 21 (Gap 2, Step 4): expiry for short-lived, single-purpose
+    # video-stream tokens (stream_token.py) — a browser <video> tag cannot
+    # attach a Bearer header, so a query-parameter token is used instead,
+    # obtained via a normal authenticated call just before playback starts.
+    # 30 minutes comfortably covers a real viewing/scrubbing session
+    # without requiring a fresh token mid-playback for any real video in
+    # this project's V1 scope, while still being meaningfully shorter-lived
+    # than a full access token's own default (ACCESS_TOKEN_EXPIRE_MINUTES).
+    STREAM_TOKEN_EXPIRE_MINUTES: int = 30
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")

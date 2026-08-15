@@ -51,6 +51,7 @@ from app.pipeline.verifier import LLMVerificationUnavailableError, Verifier
 from app.pipeline.vision_observation import CompactCrowdMetricsSummary, VisionInput
 from app.pipeline.yolo_detector import YOLO11nDetector
 from app.services import (
+    crowd_metrics_snapshot_service,
     decision_service,
     evidence_service,
     heatmap_service,
@@ -284,6 +285,18 @@ class AnalysisOrchestrator:
 
                     processing_run.frames_processed = frame_counter
                     processing_run.last_progress_update_at = _now()
+
+                    # Gap 1 retrofit (Phase 21): a CrowdMetricsSnapshot row
+                    # at the SAME periodic checkpoint already used for
+                    # progress/heatmap-cadence — never per-frame. Added to
+                    # the session (not yet committed) here so it lands in
+                    # the SAME commit as the progress-column update below,
+                    # rather than an extra round trip.
+                    if crowd_metrics is not None:
+                        crowd_metrics_snapshot_service.persist_snapshot(
+                            db, session.id, crowd_metrics, risk_result
+                        )
+
                     db.commit()
 
                     if crowd_metrics is not None:
