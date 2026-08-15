@@ -1199,3 +1199,182 @@ this system for minutes at a time, plan concurrency/queueing accordingly"
 rather than discovering that constraint only after building something that
 assumes near-instant severity-gated checks. Not fixed now — deliberately;
 there is no orchestrator yet for this concern to even attach to.
+
+## Phase 19: Incident Manager — Resolution 1 (DISMISS has no distinct lifecycle state)
+
+§20 names DISMISS as a distinct operator action from RESOLVE, but §19's
+actual lifecycle diagram (DETECTED -> ACTIVE -> RESOLVED, or DETECTED/
+ACTIVE -> FALSE_POSITIVE) never names a separate "DISMISSED" state. Both
+DISMISS and RESOLVE transition `lifecycle_status` to RESOLVED —
+`closure_reason` (a separate, nullable `ClosureReason` enum: RESOLVED,
+DISMISSED) is populated only at that transition, preserving the real
+operational distinction for audit/analytics without inventing a lifecycle
+value the spec's own diagram never named.
+`test_incident_operator_actions.py::test_dismiss_and_resolve_set_different_closure_reasons`
+proves both paths land on the SAME `lifecycle_status` with DIFFERENT
+`closure_reason` values.
+
+## Phase 19: Incident Manager — Resolution 2 (ACKNOWLEDGED is orthogonal, not a lifecycle state)
+
+§19 describes ACKNOWLEDGED as "operator-set status... additionally" — not
+part of the diagrammed transition graph. Modeled as
+`acknowledged`/`acknowledged_at`/`acknowledged_by`, independent of
+`lifecycle_status`. Direct consequence for idempotency design:
+`acknowledge_incident` is the ONLY one of the five operator actions that
+does NOT raise on repeated application to the same already-true state —
+re-acknowledging an already-acknowledged DETECTED/ACTIVE incident is a
+normal, harmless operator action (not an invalid lifecycle transition),
+and per §20's "never applied silently," EVERY call still creates its own
+`OperatorAction` audit row regardless of whether the flag actually
+changed. The other four actions (DISMISS/RESOLVE/MARK_FALSE_POSITIVE/
+ESCALATE) DO raise `InvalidIncidentTransitionError` (-> 409) on
+re-application to an already-terminal or already-escalated state, since
+those genuinely are lifecycle-shaped transitions where "do it again" is a
+meaningless or actively-wrong operation.
+`test_incident_operator_actions.py::test_re_acknowledge_is_idempotent_but_still_audited`
+proves this concretely: two acknowledge calls, zero errors, two audit
+rows.
+
+## Phase 19: Incident Manager — Resolution 3 (ESCALATE is ADMIN-only, state-only) — require_role's First Real Use
+
+§20 names ESCALATE as a real operator action, but §25's OPERATOR
+permission list explicitly enumerates only "acknowledge, dismiss, resolve,
+mark false positive" — omitting escalate — and §26's route list similarly
+omits an escalate route. `POST /api/v1/incidents/{id}/escalate` requires
+`require_role(Role.ADMIN)`.
+
+**Genuine architectural payoff worth naming explicitly**: `require_role`
+was built in Phase 2 (`app/core/deps.py`) but had ZERO real call sites
+anywhere in this codebase until this route — every route since Phase 2 has
+used the unrestricted `get_current_user` (any authenticated user). This is
+the first time the codebase's own role-gating primitive is genuinely
+exercised end-to-end, proving it was built correctly rather than being
+dead code — confirmed by a real 403 test
+(`test_incidents_api.py::test_escalate_requires_admin_operator_gets_403`,
+an OPERATOR-role user hitting the route directly) and a real 200 test with
+a genuine ADMIN-role user
+(`test_incidents_api.py::test_escalate_succeeds_for_admin`).
+
+ESCALATE sets `priority=ELEVATED` and is fully audited via
+`operator_actions`, exactly like the other four actions, but performs NO
+actual notification delivery of any kind. This is a deliberate, honestly-
+documented limitation, not a silent omission: no email/SMS/push/webhook
+component is named anywhere in this project's master spec, so there is
+nothing to build a delivery mechanism against. `grep`-confirmed: zero
+notification-delivery code exists anywhere in this phase's additions.
+
+## Phase 19: Incident Manager — Decision #2 (Correlation Window: Real Reasoning + Honest MVP Limitation)
+
+`INCIDENT_CORRELATION_WINDOW_SECONDS=120.0` (2 minutes) — informed by this
+pipeline's OWN real cadence: `VLM_COOLDOWN=30s` already rate-limits how
+often a RISK trigger at the SAME severity can re-fire (Phase 13), so
+successive evidence cycles from ONE ongoing, sustained incident naturally
+arrive at least ~30s apart. 120s gives roughly a 4x margin over that
+30s floor — enough to bridge several such cycles without being so wide
+that genuinely separate later events would incorrectly merge.
+
+**Honest, explicitly-accepted MVP limitation, not an oversight**: this is
+single-camera, TIME-ONLY correlation — it has no notion of WHERE within
+the frame an event is happening, only WHEN. Two genuinely simultaneous but
+UNRELATED incidents occurring in different parts of the same camera's
+frame (e.g. a crush at one exit and an unrelated barrier collapse at
+another, both within the same 120s window) would be INCORRECTLY merged
+into one Incident by this simplified logic. This is explicitly NOT the
+zone-topology cross-camera correlation described elsewhere in the master
+spec — that is a genuinely different, later, V3 multi-camera concept this
+phase does not attempt. Accepted scope for a single-camera MVP.
+
+## Phase 19: Incident Manager — A Real Bug Found and Fixed During Testing
+
+`correlate_or_create_incident`'s FIRST draft transitioned a BRAND-NEW
+incident straight from DETECTED to ACTIVE on its own founding evidence
+link — because the DETECTED->ACTIVE check ran unconditionally after every
+evidence link, including the very first one that just created the
+incident. This is wrong: Diagram 9's transition is triggered by "a NEW
+correlated EvidencePackage arriving while status is DETECTED," meaning a
+SECOND, separate evidence event correlating into an ALREADY-EXISTING
+incident — not the first evidence that brought the incident into being.
+Caught immediately by
+`test_incident_correlation.py::test_second_decision_within_window_correlates_and_transitions_to_active`
+(which asserted the FIRST incident's own status right after creation) and
+`test_decision_when_only_incident_is_terminal_creates_new_incident` both
+failing on a real assertion, not a hunch. Fixed by tracking whether the
+matched incident came from correlation (existing) vs. fresh creation, and
+only running the transition check in the correlation case. Logged here
+per this project's "report deviations honestly" standard — this was a
+genuine implementation bug caught by the test suite doing its job, not a
+design ambiguity.
+
+## Phase 19: Incident Manager — Preview Script Finding: Real VLM Abstention Rate on Calm Footage, and a User-Approved Fix
+
+**Real, measured finding across 4 real preview-script runs (~77 real
+trigger-worthy decision cycles) before any fix was applied.** Only ~2.6%
+of real VLM calls against genuinely calm, UNMODIFIED real frames from
+`people_clip.mp4` returned a non-empty `observations` list. The other
+~97% correctly triggered Phase 17's `critical_risk_no_visual_evidence`
+contradiction check and deterministically abstained — the system refusing
+to fabricate an INCIDENT correlation when there is no real visual
+evidence, exactly as designed (a genuine safety property, not a bug). But
+it also meant brute-force retrying (attempt budgets tried: 6, 12, 18, 40 —
+all real, all logged) could not reliably produce the required 3+
+correlated INCIDENT cycles within one run in reasonable time.
+
+**This was surfaced to the user rather than decided unilaterally**,
+because the only ways forward (keep burning real compute on low-odds
+retries, accept a partial demonstration, or alter what the preview script
+shows the VLM) all involve a judgment call about what a "real" demo should
+mean here. The user chose: draw a small, clearly-documented synthetic
+hazard marker onto the ROI region of the chosen real frame before every
+synthetic-stage VLM call in `scripts/preview_incident_manager.py` —
+reusing the EXACT same red-circle-marker technique and constants already
+established for VLM test fixtures (`scripts/vlm_security_fixtures.py`,
+Phase 15's `_HAZARD_CENTER`/`_HAZARD_RADIUS`/`_HAZARD_COLOR_BGR`), now
+extended from "test fixture" to "demo-reliability" use in a preview
+script. This is a scoped, honestly-documented engineering choice for
+`preview_incident_manager.py` ONLY — it does NOT touch
+`should_abstain()`/the contradiction check/`EvidenceBuilder`/`Reasoner`/
+`Verifier`/any production code path, and it is explicitly NOT a claim that
+`people_clip.mp4` organically contains this hazard.
+
+**Result after the fix**: the very next real run succeeded within 4
+attempts — OPERATOR-1 created a new incident (DETECTED), OPERATOR-2
+correlated in and genuinely transitioned DETECTED->ACTIVE, OPERATOR-4
+correlated in again and genuinely self-looped at ACTIVE (OPERATOR-3
+correctly abstained — the marker technique increases the ODDS of a real
+observation, it does not force one every time). Two real operator actions
+(acknowledge, then resolve) were then applied via the service layer and
+verified persisted in Postgres. See the Definition of Done report for the
+full real output.
+
+## FORWARD NOTE: Compounding Real-Inference Latency in Full-Chain Testing
+
+This phase's own preview script (`scripts/preview_incident_manager.py`)
+took roughly **2.5 hours of real background inference wall-clock time**
+across its runs to produce ~77 real trigger-worthy decision cycles. Each
+cycle chains multiple real, non-mocked model calls end-to-end: MiniCPM-V
+via Ollama (~25-30s per call, every cycle), plus — only on the subset of
+cycles that reach that stage — Qwen3-8B Reasoner calls (~85s, Phase 17)
+and, on the smaller subset that produce an INCIDENT outcome, Verifier
+calls (~180-213s, Phase 18, Step 0's own measured range). None of these
+per-call costs are new information by themselves — each was measured and
+logged in its own phase — but this is the first time they have been
+chained together in one real, sustained run, and the compounding effect is
+worth naming explicitly rather than leaving implicit.
+
+**Why this matters going forward**: every phase added so far only makes
+this chain longer — Vision Intelligence -> Evidence Package -> Reasoner ->
+(conditionally) Verifier -> (conditionally) Incident correlation, with more
+components likely to join before §35. A single full-chain cycle that hits
+every stage is already on the order of 5-6 minutes of real CPU-bound
+inference, not the sub-second cost a purely deterministic pipeline would
+imply. This trend will only grow, not shrink, as more real components are
+added.
+
+**Direct relevance to §35's Sprint-0 full-system CPU/load test (not yet
+performed)**: that test's planning should treat this phase's real,
+measured, on-the-record per-cycle wall-clock cost as its baseline
+assumption, not as a worst case to plan around after the fact. A load test
+that assumes sub-second or few-second cycle times — reasonable for a
+purely deterministic system — would be silently wrong for this system's
+actual real-inference-bound behavior. This note exists specifically so
+that assumption is not made implicitly when §35 is eventually scoped.

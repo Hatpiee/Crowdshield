@@ -7,6 +7,7 @@ from app.api.auth import router as auth_router
 from app.api.decisions import router as decisions_router
 from app.api.evidence import router as evidence_router
 from app.api.heatmaps import router as heatmaps_router
+from app.api.incidents import router as incidents_router
 from app.api.risk import router as risk_router
 from app.api.sessions import router as sessions_router
 from app.api.videos import router as videos_router
@@ -57,6 +58,7 @@ app.include_router(heatmaps_router, prefix="/api/v1")
 app.include_router(risk_router, prefix="/api/v1")
 app.include_router(evidence_router, prefix="/api/v1")
 app.include_router(decisions_router, prefix="/api/v1")
+app.include_router(incidents_router, prefix="/api/v1")
 
 
 @app.get("/health")

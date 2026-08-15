@@ -414,6 +414,25 @@ class Settings(BaseSettings):
     # runaway generation (e.g. a repetition loop) — not an active
     # constraint expected to bind under normal operation.
     VERIFIER_MAX_THINKING_TOKENS: int = 1000
+    # Phase 19 (Incident Manager, decision #2): a new incident-worthy
+    # decision correlates into an existing DETECTED/ACTIVE incident for the
+    # SAME session if its (video-timeline) timestamp_seconds is within this
+    # many seconds of that incident's most recently linked evidence;
+    # otherwise a new incident is created.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 120.0
+    # (2 minutes), informed by this pipeline's OWN real cadence rather than
+    # picked in a vacuum: VLM_COOLDOWN=30s already rate-limits how often a
+    # RISK trigger at the SAME severity can re-fire, so successive evidence
+    # cycles from ONE ongoing, sustained incident naturally arrive at least
+    # ~30s apart. 120s comfortably bridges several such cycles (a
+    # ~4x margin over the 30s cooldown floor) without being so wide that
+    # genuinely separate later events would incorrectly merge. Known,
+    # honest MVP limitation (not an oversight): this is single-camera,
+    # time-only correlation — two genuinely simultaneous but unrelated
+    # incidents in different parts of the same frame would be incorrectly
+    # merged by this simplified logic. See DECISIONS.md.
+    INCIDENT_CORRELATION_WINDOW_SECONDS: float = 120.0
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
