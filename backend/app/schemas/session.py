@@ -28,6 +28,11 @@ class ProcessingRunRead(BaseModel):
     completed_at: datetime | None
     error_message: str | None
     created_at: datetime
+    # Phase 20 (Decision G): minimal progress data, surfaced on the
+    # EXISTING GET /sessions/{id}/status route — no new route.
+    frames_processed: int | None = None
+    total_frames: int | None = None
+    last_progress_update_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

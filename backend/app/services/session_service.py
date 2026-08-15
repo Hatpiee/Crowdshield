@@ -75,25 +75,43 @@ def start_session(db: Session, session: AnalysisSession) -> AnalysisSession:
 
 
 def cancel_session(db: Session, session: AnalysisSession) -> AnalysisSession:
-    if session.status not in (SessionStatus.CREATED, SessionStatus.QUEUED):
+    # Phase 20: PROCESSING is a genuinely cancellable state now that the
+    # AnalysisOrchestrator exists (it wasn't reachable at all in Phase 4,
+    # when this function was first written for CREATED/QUEUED only).
+    if session.status not in (
+        SessionStatus.CREATED, SessionStatus.QUEUED, SessionStatus.PROCESSING,
+    ):
         raise InvalidStateTransitionError(
             f"Cannot cancel a session in status {session.status.value}; "
             "it is already terminal"
         )
 
+    was_processing = session.status == SessionStatus.PROCESSING
     session.status = SessionStatus.CANCELLED
 
-    pending_run = (
-        db.query(ProcessingRun)
-        .filter(
-            ProcessingRun.session_id == session.id,
-            ProcessingRun.status == ProcessingRunStatus.PENDING,
+    if not was_processing:
+        # Phase 4's original, UNCHANGED behavior: no orchestrator is
+        # running yet, so this call is the only writer that will ever
+        # cancel the still-PENDING ProcessingRun.
+        pending_run = (
+            db.query(ProcessingRun)
+            .filter(
+                ProcessingRun.session_id == session.id,
+                ProcessingRun.status == ProcessingRunStatus.PENDING,
+            )
+            .first()
         )
-        .first()
-    )
-    if pending_run is not None:
-        pending_run.status = ProcessingRunStatus.CANCELLED
-        pending_run.completed_at = datetime.now(timezone.utc)
+        if pending_run is not None:
+            pending_run.status = ProcessingRunStatus.CANCELLED
+            pending_run.completed_at = datetime.now(timezone.utc)
+    # Phase 20 (Decision F): for an ACTIVELY PROCESSING session, this call
+    # deliberately touches ONLY the AnalysisSession.status signal that the
+    # orchestrator's own periodic checkpoint polls for
+    # (analysis_orchestrator._fresh_status) — the ProcessingRun itself is
+    # finalized to CANCELLED by the orchestrator, once it has actually
+    # stopped Loop A and joined any in-flight Loop B thread(s) (Decision
+    # D). Setting it here too would race with, and could be silently
+    # overwritten by, the orchestrator's own eventual write.
 
     db.commit()
     db.refresh(session)

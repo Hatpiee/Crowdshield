@@ -13,12 +13,10 @@ from app.core.database import Base
 class SessionStatus(str, enum.Enum):
     # Full eventual status set defined now as a single Postgres native enum
     # type (per master spec §21) since widening an existing enum type later
-    # requires its own migration for no benefit. Only CREATED, QUEUED, and
-    # CANCELLED are reachable by any code path in this phase — PROCESSING,
-    # COMPLETED, and FAILED require the actual processing pipeline (roadmap
-    # phases 7+, e.g. Frame Extraction/Detection), which does not exist yet.
-    # Their presence here is a one-time schema decision, not an
-    # accidentally-implemented feature.
+    # requires its own migration for no benefit. PROCESSING, COMPLETED, and
+    # FAILED were unreachable until Phase 20's AnalysisOrchestrator — see
+    # test_analysis_orchestrator.py for the tests proving each is now
+    # genuinely reachable via real processing.
     CREATED = "CREATED"
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"

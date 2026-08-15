@@ -1,6 +1,9 @@
+import uuid
+
 from app.core.config import settings
 from app.models.analysis_session import AnalysisSession, SessionStatus
 from app.models.processing_run import ProcessingRun, ProcessingRunStatus
+from app.services import session_service
 
 
 def test_create_session_valid_video(client, auth_headers, make_video, test_user):
@@ -80,7 +83,16 @@ def test_start_session_from_created(client, auth_headers, make_video, db_session
         .first()
     )
     assert run is not None
-    assert run.status == ProcessingRunStatus.PENDING
+    # Phase 20: the response body above (built deterministically BEFORE
+    # launch_session_processing() spawns its background thread — see
+    # DECISIONS.md) is the authoritative check that start_session() set
+    # PENDING. This SEPARATE, subsequent query genuinely races the real
+    # background AnalysisOrchestrator thread, which flips ProcessingRun to
+    # RUNNING essentially immediately (the very first thing run() does,
+    # before any real component construction) — PENDING or RUNNING are
+    # both correct outcomes here depending on timing, unlike the
+    # already-fixed response body above.
+    assert run.status in (ProcessingRunStatus.PENDING, ProcessingRunStatus.RUNNING)
 
 
 def test_start_session_already_queued_conflicts(client, auth_headers, make_video):
@@ -111,11 +123,21 @@ def test_cancel_session_from_created(client, auth_headers, make_video):
 def test_cancel_session_from_queued_also_cancels_processing_run(
     client, auth_headers, make_video, db_session
 ):
+    # Phase 20: start_session() is called directly via the SERVICE layer
+    # here (not through POST /start) so this test deterministically
+    # exercises session_service's own QUEUED + PENDING-run-cancellation
+    # logic. Going through the real HTTP route would also launch a real
+    # background AnalysisOrchestrator thread, which (correctly, per
+    # Decision E) flips AnalysisSession.status to PROCESSING essentially
+    # immediately — BEFORE any real component construction, not after —
+    # so there is no reliable window in which a SEPARATE, later call could
+    # still observe QUEUED. See DECISIONS.md.
     video = make_video()
     created = client.post(
         "/api/v1/sessions", headers=auth_headers, json={"video_id": str(video.id)}
     ).json()["data"]
-    client.post(f"/api/v1/sessions/{created['id']}/start", headers=auth_headers)
+    session = db_session.get(AnalysisSession, uuid.UUID(created["id"]))
+    session_service.start_session(db_session, session)
 
     response = client.post(f"/api/v1/sessions/{created['id']}/cancel", headers=auth_headers)
     assert response.status_code == 200
@@ -192,7 +214,7 @@ def test_get_session_not_found(client, auth_headers):
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_get_session_status_lightweight_shape(client, auth_headers, make_video):
+def test_get_session_status_lightweight_shape(client, auth_headers, make_video, db_session):
     video = make_video()
     created = client.post(
         "/api/v1/sessions", headers=auth_headers, json={"video_id": str(video.id)}
@@ -209,7 +231,16 @@ def test_get_session_status_lightweight_shape(client, auth_headers, make_video):
     assert data["status"] == "CREATED"
     assert data["latest_processing_run"] is None
 
-    client.post(f"/api/v1/sessions/{created['id']}/start", headers=auth_headers)
+    # Phase 20: start_session() is called directly via the SERVICE layer
+    # here (not through POST /start) — see
+    # test_cancel_session_from_queued_also_cancels_processing_run's own
+    # comment for why going through the real HTTP route makes QUEUED an
+    # unreliably-observable transient state for a separate, later call.
+    # This test's own purpose (response SHAPE) doesn't need real
+    # orchestration at all.
+    session = db_session.get(AnalysisSession, uuid.UUID(created["id"]))
+    session_service.start_session(db_session, session)
+
     response = client.get(
         f"/api/v1/sessions/{created['id']}/status", headers=auth_headers
     )

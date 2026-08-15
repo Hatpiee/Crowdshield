@@ -1378,3 +1378,296 @@ that assumes sub-second or few-second cycle times — reasonable for a
 purely deterministic system — would be silently wrong for this system's
 actual real-inference-bound behavior. This note exists specifically so
 that assumption is not made implicitly when §35 is eventually scoped.
+
+**Corroborated by a second, independent data point in Phase 20**: see
+"Phase 20: Real Finding — Ollama/CPU Contention Under the Full Test Suite"
+below — real Ollama timeouts observed when THIS phase's own chained
+inference cost combined with Phase 20's orchestrator tests running in the
+same process. Two separate phases, two separate mechanisms (one script's
+own sequential cycles; one test suite's cumulative concurrent load), same
+underlying constraint: real chained/concurrent inference cost compounds
+and is not free to ignore when planning §35.
+
+## Phase 20: AnalysisOrchestrator — Decisions A-I (the most architecturally significant phase to date)
+
+This is the phase where `POST /sessions/{id}/start` finally does real work.
+Every decision below was FROZEN by the phase spec itself; this section
+records the reasoning and, where the spec left genuine implementation
+latitude, the specific engineering judgment made.
+
+**Decision A — plain `threading`, not Celery/RQ/Redis.** Phase 4's original
+ban on background execution was explicitly conditioned on "no real
+processing pipeline exists yet" — this phase is exactly the "much later
+phase" that ban deferred to. The SEPARATE, more durable ban on message
+brokers (Minimum Viable Complexity) still applies in full: `threading` is
+stdlib, adds zero new dependencies, and this project's own CPU-first,
+single-box MVP target (§5) never needed distributed task queuing in the
+first place. `session_service.start_session()` is untouched;
+`launch_session_processing()` (`orchestration_launcher.py`) is called
+strictly AFTER it succeeds, from the route, and returns immediately without
+waiting — the HTTP response shape is byte-for-byte identical to before this
+phase (see `test_sessions.py`'s pre-existing `test_start_session_from_created`,
+still passing unmodified).
+
+**Decision B — Loop A never blocks on Loop B; a per-session semaphore caps
+concurrency; drop, never queue.** `MAX_CONCURRENT_SEMANTIC_ANALYSES`
+(default 1) is enforced via `threading.Semaphore.acquire(blocking=False)`
+in `AnalysisOrchestrator._maybe_spawn_loop_b`. **Scope judgment call, not
+explicit in the spec**: the semaphore is constructed once per
+`AnalysisOrchestrator` INSTANCE (i.e. per session), not as a process-wide
+global — every other stateful component in this pipeline (Tracker,
+RiskStateMachine, TriggerEngine, ...) is already session-scoped, and this
+phase builds no cross-session orchestration manager, so a per-session cap
+is the natural, consistent reading: "how many Loop B chains may run
+simultaneously" for THIS session's own Loop A. A genuinely global cross-
+session cap (e.g. for a future multi-session-concurrency-aware deployment)
+is out of scope here.
+
+**Honest, accepted tradeoff (explicitly required to be documented)**:
+Ollama's inference process competes for the SAME physical CPU cores Loop A
+needs. "Concurrent" here means Loop A is not fully FROZEN while Loop B
+runs — it does not mean Loop A's own FPS is unaffected. On this project's
+single-CPU-box MVP target, a real Loop B invocation WILL measurably slow
+Loop A's per-frame throughput while it's in flight. This is an accepted
+MVP tradeoff, not a bug — see the "Compounding Real-Inference Latency"
+note above for the real, measured scale of a single Loop B chain's cost.
+
+**Decision C — each background thread gets its OWN fresh DB session, never
+a shared or request-scoped one.** Implemented via `database.SessionLocal()`
+calls inside both `AnalysisOrchestrator.run()` (Loop A's session) and
+`AnalysisOrchestrator._run_loop_b()` (each Loop B thread's own session).
+**Testability judgment call, not explicit in the spec**: all orchestrator/
+Loop-B code accesses this as `database.SessionLocal()` (module-qualified
+access to `app.core.database`, never `from app.core.database import
+SessionLocal`) specifically so `tests/conftest.py`'s new
+`_orchestrator_db_session_redirect` autouse fixture can redirect EVERY
+background thread's session factory to the test database with ONE
+`monkeypatch.setattr(database, "SessionLocal", TestSessionLocal)` call —
+without this, every test that hits `/start` would spawn real background
+threads connecting to the developer's REAL `DATABASE_URL`, not
+`DATABASE_URL_TEST`. Proven directly by
+`test_analysis_orchestrator.py::test_loop_b_uses_its_own_fresh_db_session_never_loop_as`
+(asserts the Loop B thread's own `SessionLocal()` object id is never the
+spawning thread's `db_session` id).
+
+**Decision D — Loop A joins any in-flight Loop B thread(s) before
+finalizing.** `run()` collects every spawned Loop B `Thread` object (Loop A
+never blocks to spawn them — `.start()` returns immediately) and calls
+`.join()` on each only AFTER the frame loop itself has ended (normally or
+via cancellation), before writing the final COMPLETED/CANCELLED status.
+Naturally bounded — no additional timeout — since every real network call
+inside a Loop B chain already has its own configured ceiling
+(`VLM_REQUEST_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`,
+`VERIFIER_REQUEST_TIMEOUT_SECONDS`).
+
+**Decision E — every run reaches a terminal state, always.** `run()`'s
+entire body is one outermost try/except; any unhandled exception —
+including a deliberately-raised `VideoPreconditionError` when the video
+file/metadata is missing/invalid — is caught, logged with a full
+traceback, and results in `ProcessingRun.status=FAILED` +
+`error_message=str(exc)` + `AnalysisSession.status=FAILED`. Proven by
+`test_run_reaches_failed_on_unexpected_exception_with_real_error_message`
+(injects a real `RuntimeError` mid-Loop-A via a monkeypatched
+`YOLO11nDetector.detect`).
+
+**Decision F — cancellation checked periodically (every
+`PROGRESS_UPDATE_INTERVAL_FRAMES` frames), in-flight Loop B chains allowed
+to finish.** The checkpoint queries `AnalysisSession.status` via a
+Core-style column-only query (`analysis_orchestrator._fresh_status`) that
+bypasses the ORM identity map entirely — this is necessary because the
+orchestrator's own long-lived session would otherwise keep returning a
+STALE cached `SessionStatus` for an already-loaded row even after a
+DIFFERENT session (the real `/cancel` route's own request-scoped session)
+commits a change to it. On detection, Loop A `break`s immediately (no new
+frames, no new Loop B threads) but does NOT touch already-running Loop B
+threads — those are joined normally by Decision D and allowed to complete
+and persist their real evidence/decision, matching this project's
+evidentiary philosophy that work already substantially underway is real,
+valid evidence worth keeping, not something to abandon mid-flight just
+because a human clicked cancel. Proven by
+`test_cancellation_mid_run_stops_promptly_and_reaches_cancelled` (a real
+mid-run cancellation via `session_service.cancel_session` — the exact same
+function the `/cancel` route calls — while Loop A is deterministically
+blocked on its 2nd frame via a synchronized `threading.Event`, not a
+timing guess).
+
+**REQUIRED EXTENSION, not originally in Phase 4's scope**: `cancel_session`
+previously only accepted `CREATED`/`QUEUED` — a session in `PROCESSING`
+(unreachable until THIS phase) would have been rejected with 409, making
+mid-run cancellation via the existing route impossible. Extended to also
+accept `PROCESSING`, with a genuinely different effect depending on which
+pre-state applied: for `CREATED`/`QUEUED` the behavior is BYTE-FOR-BYTE
+UNCHANGED (still synchronously cancels the `PENDING` `ProcessingRun`
+itself, since no orchestrator is running yet to do it); for `PROCESSING`,
+this call deliberately touches ONLY the `AnalysisSession.status` signal —
+the `ProcessingRun` itself is finalized to `CANCELLED` exclusively by the
+orchestrator once it has actually stopped Loop A and joined any in-flight
+Loop B thread(s), never by the route directly (which cannot know when
+that has actually happened).
+
+**Decision G — minimal progress DATA only, no streaming (roadmap Phase
+22, out of scope).** Three new nullable columns on the EXISTING
+`ProcessingRun` (`frames_processed`, `total_frames`,
+`last_progress_update_at`) — `total_frames` set once, right after
+`MP4FrameSource.get_metadata()` is available; the other two updated at the
+SAME periodic checkpoint as decision F, never per-frame. Surfaced by
+extending the EXISTING `GET /sessions/{id}/status` route's
+`ProcessingRunRead` schema — no new route.
+
+**Decision H — heatmap generation cadence: 5.0 video-timeline seconds,
+checked at the SAME periodic checkpoint (not a separate finer-grained
+check).** See `config.py`'s `HEATMAP_GENERATION_INTERVAL_SECONDS` entry
+for the full reasoning (§24's "timestamp-synchronized display," not
+benchmarked — Sprint-0 recalibration candidate).
+
+**Decision I — process as fast as the CPU allows, no artificial pacing.**
+`MP4FrameSource.frames()` is consumed in a tight loop with no `sleep()` of
+any kind — consistent with every batch/file-read preview script since
+Phase 5/8.
+
+## Phase 20: A Real Judgment Call — Heavy Component Construction Happens Inside `run()`, Not `__init__`
+
+The phase spec's Step 2 text ("`AnalysisOrchestrator` — constructed once
+per session run (`__init__` takes session_id, video storage path, model
+config snapshot)... `__init__`: constructs all the ONE-per-session
+component instances") read literally alongside Step 3 ("launcher:
+constructs an `AnalysisOrchestrator`... spawns it on a new
+`threading.Thread`... returns immediately without waiting") is genuinely
+ambiguous about WHICH thread pays for real YOLO-model-load and real Ollama-
+handshake I/O: if `__init__` itself did that work, and the launcher calls
+`AnalysisOrchestrator(session_id)` BEFORE `threading.Thread(...).start()`,
+that heavy construction would run on the calling (HTTP request) thread —
+directly contradicting Decision A's explicit, non-negotiable "the HTTP
+response still returns immediately."
+
+Resolved by making `__init__` deliberately trivial (stores only
+`session_id` and a fresh `threading.Semaphore`) and moving ALL component
+construction (`Detector`, `Tracker`, `OpticalFlow`, `CrowdMetricsEngine`,
+`RiskStateMachine`, `TriggerEngine`, plus `VisionModel`/`Reasoner`/
+`Verifier`) into `run()` itself — which IS the function executed on the
+background thread. This is the only reading consistent with Decision A's
+literal, explicit requirement, and is logged here as a real interpretation
+choice rather than silently picked without comment.
+
+A related, undocumented-in-the-spec choice: `VisionModel`/`Reasoner`/
+`Verifier` are NOT named in the Frozen Decisions' "ONE Detector, ONE
+Tracker, ..." list (only the Loop-A-side components are), but this
+implementation constructs them ONCE per run too (in `run()`, shared safely
+across however many Loop B threads that run spawns) rather than once PER
+TRIGGER. Their own docstrings (Phase 14/17/18) already state they are
+stateless and safe to "construct once and reuse freely, or construct fresh
+per call — either is safe" — constructing once avoids paying their real
+Ollama `client.list()` handshake cost on every single trigger, which would
+otherwise add real, avoidable latency to every Loop B invocation for no
+benefit.
+
+## Phase 20: Known, Accepted MVP Limitation — No Orphaned-Session Recovery on Restart
+
+If the server process restarts (crash, deploy, `uvicorn --reload`) while a
+session is genuinely `PROCESSING`, that session is left stuck in
+`PROCESSING` with no automatic recovery on next startup — nothing scans
+for and reconciles orphaned `RUNNING`/`PROCESSING` rows against the fact
+that the thread that owned them no longer exists. This is explicitly
+accepted MVP scope, not an oversight: `daemon=False` (Decision A's
+companion choice) already prevents the MOST common accidental-loss case
+(a clean shutdown silently killing in-flight work), but a genuine crash or
+force-kill is not addressed. Full orphaned-session recovery (a startup
+reconciliation pass, or a heartbeat/liveness mechanism) is legitimate
+future/production-hardening work, out of scope for this phase.
+
+## Phase 20: Two Real Bugs Found and Fixed During Testing
+
+**Bug 1 — `POST /sessions/{id}/start`'s own response could non-deterministically
+show FAILED instead of QUEUED.** First draft launched the background thread
+BEFORE building the response payload. `db`'s default `expire_on_commit=True`
+means `session_service.start_session()`'s own commit expires the just-loaded
+`AnalysisSession` row; the response-building code's subsequent query is a
+genuine fresh SELECT — one that, under real timing, could observe the
+background thread's own near-instant write (a video with missing/invalid
+metadata reaches FAILED with no real I/O in that failure path at all,
+sometimes faster than the SAME request's own remaining Python code). Caught
+by `test_start_session_from_created`/`test_get_session_status_lightweight_shape`
+failing with `FAILED` where `QUEUED` was expected. Fixed by building the
+entire response payload BEFORE calling `launch_session_processing` — the
+route's response is now deterministically built from state no concurrent
+writer can yet exist for, not merely "usually" correct.
+
+**Real finding, not just a bug**: `AnalysisSession.status` flips to
+`PROCESSING` essentially IMMEDIATELY once the background thread starts —
+that write happens at the very top of `run()`, before any real component
+construction (YOLO load, Ollama handshakes) — so QUEUED is now a
+genuinely transient, unobservable-by-a-separate-later-call state once any
+real orchestrator exists, REGARDLESS of whether the referenced video is
+itself processable. Two more pre-existing Phase 4 tests
+(`test_cancel_session_from_queued_also_cancels_processing_run`,
+`test_get_session_status_lightweight_shape`) assumed a session started via
+the real HTTP route stays observably QUEUED for their own very next,
+separate call — an assumption that was only ever true because no real
+processing existed before this phase. Fixed by having both tests call
+`session_service.start_session()` directly (bypassing the HTTP route, and
+therefore `launch_session_processing`) to set up the QUEUED+PENDING state
+they actually want to test — their own real purpose (PENDING-run-cancellation
+logic; response shape) never needed real orchestration in the first place.
+
+**Bug 2 — a real `ObjectDeletedError` from a background thread racing test
+teardown.** The new `_join_orchestrator_threads` autouse fixture
+(`conftest.py`) was first written with no explicit fixture dependency,
+relying on pytest's default teardown ordering to run it before
+`db_session`'s own teardown (which deletes every row from every table).
+That ordering is NOT guaranteed for independent autouse fixtures — a real
+`sqlalchemy.orm.exc.ObjectDeletedError` was observed from an orchestrator
+thread's own `db.commit()` call, racing against `db_session`'s row-wiping
+teardown which had already deleted the very `processing_runs` row that
+commit was updating. Fixed by giving `_join_orchestrator_threads` an
+explicit (unused in its own body) `db_session` parameter — pytest tears
+down dependent fixtures before their dependencies, so this guarantees
+every background thread is joined BEFORE any table gets wiped, for every
+test in the suite, not just the dedicated orchestrator tests. Logged here
+per this project's "report deviations honestly" standard — both were
+genuine implementation bugs caught by the test suite doing its job, not
+design ambiguities.
+
+**A third assertion required honest weakening, not a code fix**:
+`test_start_session_from_created`'s own direct `ProcessingRun` requery
+(a redundant "belt and suspenders" double-check of what the response body
+had already verified) could observe `RUNNING` instead of `PENDING`, for
+the same reason as the "real finding" above — `ProcessingRunStatus.RUNNING`
+is set essentially immediately once the background thread starts, before
+any real component construction. The response body itself (built
+deterministically before the thread spawns) was never wrong; only this
+redundant, now-genuinely-racy follow-up query needed updating to accept
+either legitimate outcome.
+
+## Phase 20: Real Finding — Ollama/CPU Contention Under the Full Test Suite
+
+Running `pytest tests/ -q` end-to-end (all 269 tests, twice) produced two
+different real `LLMVerificationUnavailableError: ... timed out` failures
+in `test_verifier.py` — a PRE-EXISTING Phase 18 test, unmodified by this
+phase, whose `VERIFIER_REQUEST_TIMEOUT_SECONDS=260.0` was itself measured
+empirically (Step 0) against ISOLATED real Ollama calls. Re-run
+`tests/test_verifier.py` alone immediately afterward: all 4 tests passed
+cleanly (390.83s total, including two real `think=True` calls). This
+confirms the timeouts were genuine Ollama/CPU contention from this
+phase's OWN new orchestrator tests — which also make real
+`MiniCPMVisionModel()`/`Reasoner()`/`Verifier()` construction calls and,
+in `test_analysis_orchestrator.py`'s Loop-B-focused tests, real VLM
+calls — competing for the same physical CPU cores during a long combined
+run, not a Phase 20 logic regression. This is the SAME honest tradeoff
+Decision B already documents (Ollama competing with Loop A for CPU) now
+observed to also affect full-test-suite wall-clock reliability under
+heavy combined real-inference load, not just Loop A's own FPS. No timeout
+value was changed in response — doing so would conflate a measurement
+made under isolated conditions with slowness caused by unrelated
+concurrent load, which is not what that setting is meant to characterize.
+
+**Second corroborating data point for §35 planning**: this is now the
+SECOND time real full-chain/full-suite resource contention has shown up
+as a measurable finding — see Phase 19's "FORWARD NOTE: Compounding
+Real-Inference Latency in Full-Chain Testing" above, which measured
+~2.5 hours of chained real inference from ONE script's sequential
+cycles. That note and this one are different mechanisms (sequential
+chaining vs. concurrent-process CPU contention) pointing at the same
+underlying constraint: this system's real inference cost is not free to
+ignore, whether encountered one cycle at a time or as cumulative load
+across a long combined run. Both entries should be read together when
+§35's Sprint-0 full-system CPU/load test is eventually scoped.

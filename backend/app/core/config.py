@@ -433,6 +433,47 @@ class Settings(BaseSettings):
     # incidents in different parts of the same frame would be incorrectly
     # merged by this simplified logic. See DECISIONS.md.
     INCIDENT_CORRELATION_WINDOW_SECONDS: float = 120.0
+    # Phase 20 (AnalysisOrchestrator, Decision B): how many Loop B (VLM ->
+    # EvidenceBuilder -> Reasoner -> [Verifier] -> Incident correlation)
+    # chains may run CONCURRENTLY against one session. A new trigger that
+    # fires while the cap is already reached is DROPPED (not queued), with
+    # a logged reason — never silently discarded, never blocking Loop A.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 1, the
+    # spec's own suggested default — Ollama's inference process competes
+    # for the SAME physical CPU cores Loop A needs on this project's
+    # single-CPU-box MVP target (§5), so running more than one Loop B
+    # chain at once would only worsen Loop A's own FPS degradation for no
+    # clear benefit; a genuinely multi-core/multi-GPU deployment could
+    # raise this later without any code change.
+    MAX_CONCURRENT_SEMANTIC_ANALYSES: int = 1
+    # Phase 20 (Decision F/G): how many Loop A frames between each
+    # periodic checkpoint (cancellation check + progress-column update +
+    # heatmap-due check) — reused for all three concerns rather than three
+    # separate per-frame-cost knobs.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30, the
+    # spec's own suggested default, reusing the same "~1s at
+    # people_clip.mp4's 30fps" reasoning already established for
+    # RISK_STATE_PERSISTENCE_FRAMES/BOTTLENECK_WINDOW_FRAMES — frequent
+    # enough that a cancel request is honored within about a second of
+    # real video time, infrequent enough to avoid excessive per-checkpoint
+    # DB round trips on a long video.
+    PROGRESS_UPDATE_INTERVAL_FRAMES: int = 30
+    # Phase 20 (Decision H, resolving Phase 12's deferred cadence
+    # question): minimum VIDEO-TIMELINE seconds (timestamp_seconds, not
+    # frame count — fps-independent) between heatmap generation events,
+    # checked only at the same periodic checkpoint as decision F/G (not a
+    # separate finer-grained per-frame check).
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 5.0
+    # seconds — informed by §24's dashboard wanting "timestamp-synchronized
+    # display," implying a reasonably dense, scrubbable timeline rather
+    # than sparse event-only snapshots, while still being far coarser than
+    # per-frame (avoiding 5 heatmap JPEGs written to disk on every single
+    # frame of a long video). Not benchmarked against real dashboard
+    # scrubbing UX — a candidate for Sprint-0 (§35) recalibration.
+    HEATMAP_GENERATION_INTERVAL_SECONDS: float = 5.0
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")

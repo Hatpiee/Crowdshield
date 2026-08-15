@@ -20,6 +20,7 @@ from app.schemas.session import (
     SessionStatusRead,
 )
 from app.services import session_service
+from app.services.orchestration_launcher import launch_session_processing
 from app.services.session_service import InvalidStateTransitionError, VideoNotFoundError
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -161,10 +162,28 @@ def start_session(
     except InvalidStateTransitionError as exc:
         raise _invalid_state_transition(exc)
 
+    # Phase 20: the response payload is built HERE — deliberately BEFORE
+    # launch_session_processing() spawns its background thread — and only
+    # THEN is that thread launched. This ordering matters: `db`'s default
+    # expire_on_commit=True means the row(s) start_session() just committed
+    # are expired, so the query inside _fetch_session_row below performs a
+    # genuine fresh SELECT. If the background thread were launched FIRST,
+    # a video with missing/invalid metadata can race through
+    # PROCESSING->FAILED fast enough (no real I/O in that failure path) to
+    # land BEFORE this SELECT runs, making the response non-deterministically
+    # show FAILED instead of the QUEUED state this call just set. Building
+    # the response from state no concurrent writer can yet exist for keeps
+    # this route's response deterministic, matching Decision A's
+    # requirement ("the HTTP response still returns immediately with the
+    # same shape as today") literally, not merely most of the time.
     row = _fetch_session_row(db, session_id)
     session, filename, email = row
     session_read = _to_session_read(db, session, filename, email)
-    return success_envelope(session_read.model_dump(mode="json", by_alias=True))
+    response_body = success_envelope(session_read.model_dump(mode="json", by_alias=True))
+
+    launch_session_processing(session_id)
+
+    return response_body
 
 
 @router.post("/{session_id}/cancel")

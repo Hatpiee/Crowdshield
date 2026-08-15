@@ -1,3 +1,4 @@
+import threading
 import uuid
 from pathlib import Path
 
@@ -6,12 +7,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core import database
 from app.core.config import Settings, settings
 from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
 from app.models.user import Role, User
 from app.models.video import VideoAsset
+from app.services.orchestration_launcher import THREAD_NAME_PREFIX
 from tests.fixtures.synthetic_video import (
     DEFAULT_FPS,
     DEFAULT_HEIGHT,
@@ -207,6 +210,86 @@ def synthetic_mp4_path(tmp_path) -> Path:
     path = tmp_path / "synthetic.mp4"
     generate_synthetic_mp4(path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _orchestrator_db_session_redirect(monkeypatch):
+    # Phase 20: AnalysisOrchestrator/Loop B threads deliberately do NOT use
+    # FastAPI's request-scoped `db` (Decision C: each gets its own fresh
+    # session via app.core.database.SessionLocal) — that sessionmaker binds
+    # to the REAL settings.DATABASE_URL, not DATABASE_URL_TEST. Production
+    # code accesses it as `database.SessionLocal()` (module-qualified,
+    # never `from ... import SessionLocal`) specifically so ONE monkeypatch
+    # here redirects every orchestrator/Loop-B thread's session factory to
+    # the same TestSessionLocal/test_engine every other fixture in this
+    # file already uses — without this, background threads spawned during
+    # a test would silently connect to the developer's real database.
+    monkeypatch.setattr(database, "SessionLocal", TestSessionLocal)
+
+
+@pytest.fixture(autouse=True)
+def _join_orchestrator_threads(db_session):
+    # Safety net, not the primary mechanism: real orchestrator tests join
+    # their own threads explicitly and deterministically. This just
+    # guarantees NO test ever leaves a background analysis-orchestrator-*
+    # thread still writing to the test database after db_session's own
+    # teardown (which deletes every row from every table) has started —
+    # that race is what this fixture exists to close for every test that
+    # hits POST /sessions/{id}/start, not just the dedicated orchestrator
+    # tests.
+    #
+    # REAL BUG CAUGHT HERE DURING TESTING: this fixture must declare an
+    # explicit `db_session` parameter (even though its own body never uses
+    # it) purely so pytest tears it down BEFORE db_session — dependent
+    # fixtures finalize before their dependencies. Without this explicit
+    # dependency, pytest is free to run db_session's row-wiping teardown
+    # BEFORE this fixture joins a still-running background thread, and a
+    # real `sqlalchemy.orm.exc.ObjectDeletedError` was observed from the
+    # orchestrator thread's own `db.commit()` racing that exact wipe. See
+    # DECISIONS.md.
+    yield
+    for thread in threading.enumerate():
+        if thread.name.startswith(THREAD_NAME_PREFIX) and thread.is_alive():
+            thread.join(timeout=30)
+
+
+@pytest.fixture
+def make_processable_video(db_session, test_user):
+    # Phase 20: unlike the plain `make_video` fixture (a lightweight DB-only
+    # placeholder, no real file, no fps/width/height — deliberately kept
+    # that way so the many tests that don't care about real processing stay
+    # fast), this one writes a REAL, genuinely OpenCV-decodable MP4 to the
+    # (per-test-redirected) VIDEO_STORAGE_PATH with matching metadata, so
+    # AnalysisOrchestrator's own precondition check passes and a real (if
+    # tiny) background run actually executes when a test starts a session
+    # for it.
+    def _make_processable_video(
+        num_frames: int = DEFAULT_NUM_FRAMES,
+        width: int = DEFAULT_WIDTH,
+        height: int = DEFAULT_HEIGHT,
+        fps: float = DEFAULT_FPS,
+    ) -> VideoAsset:
+        from app.services import video_storage
+
+        user, _ = test_user
+        storage_filename = f"{uuid.uuid4()}.mp4"
+        file_path = video_storage.get_storage_dir() / storage_filename
+        generate_synthetic_mp4(file_path, num_frames=num_frames, width=width, height=height, fps=fps)
+        video = VideoAsset(
+            original_filename="processable_test.mp4",
+            storage_filename=storage_filename,
+            file_size_bytes=file_path.stat().st_size,
+            mime_type="video/mp4",
+            uploaded_by=user.id,
+            fps=fps, width=width, height=height, frame_count=num_frames,
+            duration_seconds=num_frames / fps,
+        )
+        db_session.add(video)
+        db_session.commit()
+        db_session.refresh(video)
+        return video
+
+    return _make_processable_video
 
 
 @pytest.fixture
