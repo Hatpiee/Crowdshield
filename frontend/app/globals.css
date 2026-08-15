@@ -3,6 +3,21 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* CrowdShield brand palette (landing page + login restyle) — single
+     source of truth. Declared as real :root custom properties (not only
+     inside @theme inline) so they're usable both as Tailwind utilities
+     (e.g. bg-cs-teal, text-cs-teal, border-cs-teal, aliased below) AND
+     directly via var(--cs-teal) etc. in inline styles (e.g.
+     AmbientBackground.tsx's SVG/glow values, which can't use Tailwind
+     utility classes). */
+  --cs-bg: #0b0f14;
+  --cs-panel: #0f1620;
+  --cs-border: #1f2937;
+  --cs-text: #f5f5f5;
+  --cs-muted: #94a3b8;
+  --cs-teal: #2dd4bf;
+  --cs-amber: #ff6b35;
 }
 
 @theme inline {
@@ -10,6 +25,14 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --color-cs-bg: var(--cs-bg);
+  --color-cs-panel: var(--cs-panel);
+  --color-cs-border: var(--cs-border);
+  --color-cs-text: var(--cs-text);
+  --color-cs-muted: var(--cs-muted);
+  --color-cs-teal: var(--cs-teal);
+  --color-cs-amber: var(--cs-amber);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,4 +46,17 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Ambient background dot glow (AmbientBackground.tsx) */
+@keyframes cs-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
 }
