@@ -1827,3 +1827,193 @@ transaction and a genuinely unreachable Ollama port, not just mocks).
   natively. Not a real-world-triggered need yet; the `limit` query param
   exists for the route to accept a caller override without duplicating the
   constant, should a future long-running session make it necessary.
+
+## Phase 22: Dashboard Integration (second half) — Media Token Generalized, Not Duplicated
+
+**Resolution 1**: `stream_token.py` was refactored, not duplicated. Extracted
+`_generate_scoped_token`/`_validate_scoped_token` private helpers, now used
+by BOTH the pre-existing video-specific public functions
+(`generate_stream_token`/`validate_stream_token` — kept with their EXACT
+Phase 21 signatures and external behavior) and the new heatmap-specific
+ones (`generate_heatmap_access_token`/`validate_heatmap_access_token`).
+Distinct purpose claim values (`"stream:video"` vs `"stream:heatmap"`) plus
+a shared `"resource_id"` claim (replacing the video-only `"video_id"` claim
+name internally) ensure a token minted for one scope/resource is never
+accepted for another. All of Phase 21's existing `test_stream_token.py` and
+`test_video_streaming.py` tests pass completely UNCHANGED after this
+refactor (confirmed — see Definition of Done). New cross-purpose rejection
+tests added in `test_heatmap_token.py`
+(`test_a_video_stream_token_is_rejected_as_a_heatmap_token` and its
+reverse) prove a video token and a heatmap token are mutually
+non-replayable even though both now route through the same internal
+helper.
+
+**Deliberately NOT given the same backward-compatibility treatment as
+Phase 21's access-token "missing purpose claim" fix**: that fix mattered
+because access tokens are long-lived session credentials that could be
+genuinely "in flight" in an already-open browser tab across a deploy.
+Media tokens (video or heatmap) are short-lived (~30 min) and minted
+on-demand every time a `<video>`/`<img>` element mounts — there is no
+realistic "old-style in-flight token" scenario, so the internal purpose
+string changing from `"stream"` to `"stream:video"` between phases is a
+pure implementation detail, invisible to every caller.
+
+**`HEATMAP_TOKEN_EXPIRE_MINUTES`**: a new, separate config knob (default
+30, same as `STREAM_TOKEN_EXPIRE_MINUTES`) rather than reusing the video
+one directly — heatmap viewing (switching between 5 types and scrubbing
+timestamps within one session) is a different usage shape than continuous
+video playback, so a future reason to tune one lifetime without touching
+the other shouldn't require decoupling them retroactively.
+
+## Phase 22: Resolution 2 — One Shared Client-Side Derivation, Not Five
+
+`frontend/lib/nearestSnapshot.ts`'s `pickCurrentItem`/`findNearestByTimestamp`
+generalize Phase 21's own decision #3 ("current risk" — most recent while
+live, nearest-to-playback-position once terminal) into ONE function used by
+every widget that needs "the value as of now": the current-risk badge, all
+four new stat cards (via one `currentMetrics` value computed once in
+`LiveMonitor.tsx`), and the heatmap viewer (via its own filtered/sorted
+slice of the full heatmap list). `LiveMonitor.tsx`'s own risk badge was
+refactored to also go through this shared helper — Resolution 2 explicitly
+required every widget of this kind to share the derivation, and the risk
+badge is one of them, so leaving its original Phase 21 inline loop in place
+alongside a second, "shared" implementation would have defeated the point.
+
+**A real, necessary retrofit of Phase 21's own timeseries-fetch effect**:
+Phase 21 fetched `crowd-metrics-timeseries` once on mount and again on the
+terminal-status transition only, since the chart didn't need per-tick
+freshness (the risk badge used the separate, lightweight `/status`
+endpoint's `latest_risk_score` field instead). Phase 22's stat cards need
+several OTHER fields (`max_density`, `max_pressure`,
+`congested_cell_fraction`, `reverse_flow_cell_fraction`,
+`bottleneck_signal_present`, `density_confidence`) that `/status` does not
+carry, and Resolution 2 forbids adding a new lighter-weight endpoint for
+them — so `LiveMonitor.tsx`'s timeseries effect now ALSO polls on the same
+`LIVE_POLL_INTERVAL_MS` cadence while non-terminal, stopping at terminal
+exactly like every other live widget. This is a deliberate, narrow
+extension of already-existing Phase 21 code (not a new mechanism) — logged
+here since it changes actual behavior of code shipped in the previous
+phase.
+
+**Shared polling constants** (`frontend/lib/livePolling.ts`,
+`LIVE_POLL_INTERVAL_MS`/`TERMINAL_SESSION_STATUSES`): every new
+live-updating widget (`HeatmapViewer`, `IncidentsList`) imports these
+rather than redeclaring the literal `2500`/terminal-status set locally —
+what actually enforces "the exact same cadence/lifecycle" (the frozen
+decision's own wording) is one shared source of truth, not just matching
+numbers by hand across files.
+
+## Phase 22: Resolution 3 — Congestion/Flow Widget Field Mapping
+
+Congestion = `congested_cell_fraction` alone. Flow = `reverse_flow_cell_fraction`
+AND `bottleneck_signal_present` together, shown as one card (both are
+flow-DYNAMICS signals, distinct from Congestion's static occupancy). Raw
+spatial flow-field data (divergence/curl, `grid_mean_velocity`) is
+deliberately NOT exposed at this summary-card level — the FLOW_CONGESTION
+heatmap already shows it visually (arrows over a congestion base layer,
+Phase 12). Color-mapping for these two cards: a simple binary "is this
+signal present at all" (`> 0`, or `bottleneck_signal_present === true`)
+drives teal/amber, rather than an arbitrary magnitude cutoff — neither
+field has a defensible universal danger threshold at the fraction level
+the way, say, a percentage-of-capacity figure might. Pressure gets NO
+magnitude-based coloring at all (stays neutral) for the same reason, one
+level further: px-space units (Phase 9's own disclosure) have no universal
+danger cutoff without the spatial context the Pressure heatmap image
+itself provides. Density's card color instead reflects `density_confidence`
+(muted/dashed below 0.85, the first real degradation tier below the
+implicit 1.0 full-KDE-fit default — see `density.py`'s own confidence
+tiers) — this project's established "never hide degraded confidence"
+principle, applied here as the primary signal for that one card instead of
+a magnitude cutoff.
+
+## Phase 22: Resolution 4 — No Duplicate Disclaimers
+
+Confirmed and left alone: Phase 12 already burns the pixel-units
+disclaimer (Pressure heatmap) and the "trend-scaled, not an independent
+forecast" disclaimer (Predictive heatmap) directly onto the rendered JPEG
+via `cv2.putText`. `HeatmapViewer.tsx` adds no frontend caption text
+duplicating either one. The Pressure stat card's own label ("px-space (see
+heatmap)") deliberately points at the image rather than re-explaining the
+caveat in prose.
+
+## Phase 22: Step 7 Resolution — Incidents List Already Carries Enough
+
+`GET /sessions/{id}/incidents` (Phase 19, unchanged this phase) already
+calls `incident_service.get_incident_detail` per incident, which already
+populates `latest_recommendation` (the most recently linked decision's
+`RecommendationType` value). No new backend field was added — the existing
+list route already provides everything `IncidentsList.tsx` needed
+(`lifecycle_status`, `priority`, `acknowledged`/`acknowledged_at`,
+`created_at`/`updated_at`, `latest_recommendation`).
+
+## Phase 22: Real Verification — Findings
+
+**A real, fresh, unacknowledged incident had to be created before Step 8
+could test a real operator action**: every incident already in the dev
+database (3 total, all from earlier phases' own verification work) was
+already RESOLVED and acknowledged — none were left in an actionable
+DETECTED/ACTIVE state. Rather than fabricate one, a one-off script called
+the REAL `incident_service.correlate_or_create_incident` against a REAL,
+already-persisted, previously-unconsumed `outcome=INCIDENT` DecisionResult
++ EvidencePackage pair (from earlier phases' real Reasoner/Verifier runs,
+session `083020d7-7bfd-4a77-b889-36c7e9bdd955`) that had never been
+correlated into an incident. This is real application code exercising real
+prior data — not a fabricated row — and the resulting incident
+(`1ef416c7-31e3-4830-a59a-45d661e2e6d7`) is what Step 8's real Acknowledge
+and Escalate actions were performed against.
+
+**Two dedicated test accounts, `.example.com`, one snag**: following this
+session's established credential pattern (create a dedicated test user
+with a self-chosen password, use it, then normally delete it afterward), a
+throwaway OPERATOR and ADMIN account were created directly in the DB.
+First attempt used an `@...local` email domain, which pydantic's own email
+validator genuinely rejects ("a special-use or reserved name") —
+`verify-credentials` returned a real 422 before any UI issue was even in
+play. Fixed by recreating both accounts under `@example.com` instead.
+
+**Deviation from the usual "delete test users afterward" pattern, reported
+honestly**: after the real Acknowledge (operator) and Escalate (admin)
+actions, both test accounts became the real `acknowledged_by`/
+`performed_by` values on the kept incident's real, kept `operator_actions`
+audit rows. Attempting to delete the users afterward hit a real foreign-key
+constraint (`incidents_acknowledged_by_fkey`). Deleting the incident/action
+rows to allow the user deletion would have destroyed the very audit-trail
+evidence Step 8 exists to prove; reassigning the FK to a different, unused
+account would misrepresent who actually performed the action. Judgment
+call: the two test accounts were left in the database (not deleted) as the
+correct, honest `performed_by` identity on real, intentionally-kept audit
+rows — a narrower version of Phase 21's own "verification artifacts are
+kept, not destroyed" precedent, now extended to accounts referenced by kept
+audit data specifically.
+
+**FLAG FOR FUTURE READERS**: `phase22.operator.test@example.com` and
+`phase22.admin.test@example.com` are INTENTIONAL dev-environment residue,
+permanently retained because deleting them would violate a real FK
+constraint (`incidents_acknowledged_by_fkey`) protecting a real,
+intentionally-kept audit trail (incident `1ef416c7-31e3-4830-a59a-45d661e2e6d7`'s
+`operator_actions` rows) — this is NOT forgotten cleanup. Both accounts
+use long, random, non-trivial passwords (23/22 characters, mixed
+case+digits+symbols — not anything guessable like "password123"),
+generated for this one-time verification and never reused elsewhere, and
+this is a local dev database, not a shared or production one. If this
+database is ever promoted toward a shared/production environment, these
+two accounts (and the synthetic incident/audit rows referencing them)
+should be reviewed and removed as part of that promotion — they were never
+intended to be real operational accounts.
+
+**Real, psql-confirmed database effects** (Definition of Done item 4):
+`incidents.acknowledged=true`, `acknowledged_by=<operator test user id>`
+after the real UI Acknowledge click; a real `operator_actions` row
+(`action_type=ACKNOWLEDGE`, `performed_by=<operator id>`); after the real
+UI Escalate click as the ADMIN test user, `incidents.priority=ELEVATED`
+and a second real `operator_actions` row (`action_type=ESCALATE`,
+`performed_by=<admin id>`) — both confirmed by direct query, not inferred
+from the UI alone.
+
+**Escalate visibility, confirmed both directions**: logged in as the real
+OPERATOR test user, the Escalate button was absent (0 matches) on the
+actionable incident. Logged in as the real ADMIN test user on the same
+incident, it was present and functional. The real server-side enforcement
+(`require_role(Role.ADMIN)`, Phase 19) was never touched this phase — the
+frontend check (`isAdmin` prop, `session?.role === "ADMIN"`) is exactly the
+UX-courtesy-only gate the frozen decision requires.

@@ -1,3 +1,5 @@
+from app.core.config import settings
+from app.models.heatmap import HeatmapSnapshot, HeatmapType
 from app.services import heatmap_service, session_service
 from tests.fixtures.crowd_metrics_builder import FRAME_HEIGHT, FRAME_WIDTH, make_crowd_metrics
 
@@ -126,3 +128,126 @@ def test_get_latest_heatmap_nonexistent_session_returns_404(client, auth_headers
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+# Phase 22, Step 2/3: heatmap-image-serving route — access-token issuance +
+# token-gated byte serving, real image bytes, and auth-failure cases.
+# Mirrors test_video_streaming.py's own coverage shape for the analogous
+# video route.
+
+
+def _get_density_snapshot(db_session, session) -> HeatmapSnapshot:
+    return (
+        db_session.query(HeatmapSnapshot)
+        .filter(
+            HeatmapSnapshot.session_id == session.id,
+            HeatmapSnapshot.heatmap_type == HeatmapType.DENSITY,
+        )
+        .one()
+    )
+
+
+def _get_image_token(client, auth_headers, heatmap_id) -> str:
+    response = client.get(f"/api/v1/heatmaps/{heatmap_id}/access-token", headers=auth_headers)
+    assert response.status_code == 200
+    return response.json()["data"]["token"]
+
+
+def test_heatmap_access_token_route_requires_auth(client, db_session, make_video, test_user):
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/access-token")
+    assert response.status_code == 401
+
+
+def test_heatmap_access_token_route_returns_a_real_token(
+    client, auth_headers, db_session, make_video, test_user
+):
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/access-token", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert isinstance(body["data"]["token"], str) and body["data"]["token"]
+    assert body["data"]["expires_in_seconds"] > 0
+
+
+def test_heatmap_access_token_route_nonexistent_heatmap_returns_404(client, auth_headers):
+    response = client.get(
+        "/api/v1/heatmaps/00000000-0000-0000-0000-000000000000/access-token",
+        headers=auth_headers,
+    )
+    assert response.status_code == 404
+
+
+def test_heatmap_image_served_with_valid_token_returns_real_jpeg_bytes(
+    client, auth_headers, db_session, make_video, test_user
+):
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+    token = _get_image_token(client, auth_headers, snapshot.id)
+
+    real_bytes = (heatmap_service.get_storage_dir() / snapshot.file_path).read_bytes()
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/image?token={token}")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == real_bytes
+    assert len(response.content) == snapshot.file_size_bytes
+
+
+def test_heatmap_image_with_no_token_returns_401(client, db_session, make_video, test_user):
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/image")
+    assert response.status_code == 401
+
+
+def test_heatmap_image_with_invalid_token_returns_401(client, db_session, make_video, test_user):
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/image?token=garbage-not-a-jwt")
+    assert response.status_code == 401
+
+
+def test_heatmap_image_with_expired_token_returns_401(
+    client, auth_headers, db_session, make_video, test_user, monkeypatch
+):
+    from app.core.stream_token import generate_heatmap_access_token
+
+    session = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot = _get_density_snapshot(db_session, session)
+
+    monkeypatch.setattr(settings, "HEATMAP_TOKEN_EXPIRE_MINUTES", -1)
+    expired_token = generate_heatmap_access_token(snapshot.id, snapshot.session_id)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot.id}/image?token={expired_token}")
+    assert response.status_code == 401
+
+
+def test_heatmap_image_with_token_for_a_different_heatmap_returns_401(
+    client, auth_headers, db_session, make_video, test_user
+):
+    session_a = _make_session_with_snapshots(db_session, make_video, test_user)
+    session_b = _make_session_with_snapshots(db_session, make_video, test_user)
+    snapshot_a = _get_density_snapshot(db_session, session_a)
+    snapshot_b = _get_density_snapshot(db_session, session_b)
+    token_for_a = _get_image_token(client, auth_headers, snapshot_a.id)
+
+    response = client.get(f"/api/v1/heatmaps/{snapshot_b.id}/image?token={token_for_a}")
+    assert response.status_code == 401
+
+
+def test_heatmap_image_nonexistent_heatmap_returns_404(client, auth_headers, db_session, make_video, test_user):
+    from app.core.stream_token import generate_heatmap_access_token
+
+    fake_id = "00000000-0000-0000-0000-000000000000"
+    token = generate_heatmap_access_token(fake_id, "00000000-0000-0000-0000-000000000000")
+
+    response = client.get(f"/api/v1/heatmaps/{fake_id}/image?token={token}")
+    assert response.status_code == 404

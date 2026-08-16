@@ -2,16 +2,18 @@
 
 import { useEffect, useState } from "react";
 
+import type { CrowdMetricsSnapshotItem } from "@/lib/types";
+import { LIVE_POLL_INTERVAL_MS, TERMINAL_SESSION_STATUSES } from "@/lib/livePolling";
+import { pickCurrentItem } from "@/lib/nearestSnapshot";
+
+import CrowdMetricsStatCards from "./CrowdMetricsStatCards";
+import HeatmapViewer from "./HeatmapViewer";
+import IncidentsList from "./IncidentsList";
 import RiskTrendChart from "./RiskTrendChart";
 import SystemStatusBadge from "./SystemStatusBadge";
 import VideoPlayer from "./VideoPlayer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
-// Decision #4: poll every 2-3s ONLY while non-terminal; stop entirely once
-// a terminal status is reached — no wasted requests against a finished
-// session.
-const STATUS_POLL_INTERVAL_MS = 2500;
-const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 
 // Reasonable color mapping using the existing palette (documented choice):
 // NORMAL stays teal ("calm/safe," matching the design tokens' own stated
@@ -42,13 +44,6 @@ interface SessionStatusPayload {
   latest_risk_state: string | null;
 }
 
-interface Snapshot {
-  frame_number: number;
-  timestamp_seconds: number;
-  risk_score: number;
-  risk_state: string;
-}
-
 async function authedFetch(token: string, path: string): Promise<Response> {
   return fetch(`${API_URL}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -60,23 +55,26 @@ export default function LiveMonitor({
   videoId,
   accessToken,
   initialStatus,
+  isAdmin,
 }: {
   sessionId: string;
   videoId: string;
   accessToken: string;
   initialStatus: SessionStatusPayload;
+  isAdmin: boolean;
 }) {
   const [status, setStatus] = useState<SessionStatusPayload>(initialStatus);
-  const [timeseries, setTimeseries] = useState<Snapshot[]>([]);
-  // The player's current playback timestamp, lifted here so the "current
-  // risk" widget can consume it — decision #3's explicitly INCREMENTAL
-  // scope for this phase: only THIS widget is wired to playback position.
-  // A plain useState (not React Context) is enough for a single consumer;
-  // promoting this to Context is straightforward once Phase 22's spatial
-  // widgets need the same value.
+  const [timeseries, setTimeseries] = useState<CrowdMetricsSnapshotItem[]>([]);
+  // The player's current playback timestamp, lifted here so every widget
+  // that needs "the value as of now" can consume it via the shared
+  // pickCurrentItem helper (Phase 22, Resolution 2) — current risk badge,
+  // the 4 new stat cards, and the heatmap viewer all read this SAME state,
+  // still a plain lifted useState (not React Context): still no more than
+  // this one component's own subtree of consumers, so Context remains
+  // premature.
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
 
-  const isTerminal = TERMINAL_STATUSES.has(status.status);
+  const isTerminal = TERMINAL_SESSION_STATUSES.has(status.status);
 
   useEffect(() => {
     if (isTerminal) return;
@@ -86,53 +84,50 @@ export default function LiveMonitor({
       if (cancelled || !res.ok) return;
       const body = await res.json();
       if (body.success) setStatus(body.data);
-    }, STATUS_POLL_INTERVAL_MS);
+    }, LIVE_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, [isTerminal, sessionId, accessToken]);
 
-  // Fetched once on mount, and again whenever processing reaches a
-  // terminal state, so the chart (and the nearest-timestamp lookup below)
-  // reflect the FULL final dataset rather than only what existed at mount
-  // time. Not re-fetched on every status poll — the chart doesn't need
-  // per-2.5s-tick freshness the way the live risk badge does.
+  // Fetched once on mount, then re-fetched on the SAME live cadence as
+  // every other widget while non-terminal (Phase 22 retrofit — Phase 21
+  // only fetched this once-on-mount/once-on-terminal-flip, sufficient for
+  // a chart that didn't need per-tick freshness; this phase's new stat
+  // cards and heatmap "current value" derivation DO need it, since there
+  // is no lighter-weight endpoint for those fields and Resolution 2
+  // forbids adding one — see DECISIONS.md).
   useEffect(() => {
     let cancelled = false;
-    authedFetch(accessToken, `/api/v1/sessions/${sessionId}/crowd-metrics-timeseries`).then(
-      async (res) => {
-        if (cancelled || !res.ok) return;
-        const body = await res.json();
-        if (body.success) setTimeseries(body.data.items);
-      }
-    );
+
+    async function fetchTimeseries() {
+      const res = await authedFetch(
+        accessToken,
+        `/api/v1/sessions/${sessionId}/crowd-metrics-timeseries`
+      );
+      if (cancelled || !res.ok) return;
+      const body = await res.json();
+      if (body.success) setTimeseries(body.data.items);
+    }
+
+    fetchTimeseries();
+    if (isTerminal) return () => {
+      cancelled = true;
+    };
+    const interval = setInterval(fetchTimeseries, LIVE_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, [sessionId, accessToken, isTerminal]);
 
-  // Decision #3: "current risk" reads the MOST RECENT snapshot for a
-  // still-PROCESSING session (the live-polled status payload already
-  // carries this), or the snapshot nearest the video's CURRENT PLAYBACK
-  // TIMESTAMP for a COMPLETED session — computed client-side from the
-  // already-fetched timeseries array, so scrubbing doesn't trigger a
-  // network request per timeupdate tick.
-  let currentRiskScore = status.latest_risk_score;
-  let currentRiskState = status.latest_risk_state;
-  if (isTerminal && playbackTime !== null && timeseries.length > 0) {
-    let nearest = timeseries[0];
-    let bestDelta = Math.abs(nearest.timestamp_seconds - playbackTime);
-    for (const snapshot of timeseries) {
-      const delta = Math.abs(snapshot.timestamp_seconds - playbackTime);
-      if (delta < bestDelta) {
-        nearest = snapshot;
-        bestDelta = delta;
-      }
-    }
-    currentRiskScore = nearest.risk_score;
-    currentRiskState = nearest.risk_state;
-  }
+  // Decision #3, generalized (Resolution 2): ONE derivation, shared by the
+  // risk badge below and CrowdMetricsStatCards — "most recent" while live,
+  // "nearest to playback position" once terminal.
+  const currentMetrics = pickCurrentItem(timeseries, isTerminal, playbackTime);
+  const currentRiskScore = currentMetrics?.risk_score ?? null;
+  const currentRiskState = currentMetrics?.risk_state ?? null;
   const riskColor = currentRiskState ? RISK_STATE_COLORS[currentRiskState] : undefined;
 
   const run = status.latest_processing_run;
@@ -194,12 +189,28 @@ export default function LiveMonitor({
         </div>
       </div>
 
+      <CrowdMetricsStatCards current={currentMetrics} />
+
+      <HeatmapViewer
+        sessionId={sessionId}
+        accessToken={accessToken}
+        isTerminal={isTerminal}
+        playbackTime={playbackTime}
+      />
+
       <div className="border border-cs-border bg-cs-panel p-5">
         <p className="mb-4 font-mono text-xs tracking-[0.15em] text-cs-muted uppercase">
           Risk Trend
         </p>
         <RiskTrendChart data={timeseries} />
       </div>
+
+      <IncidentsList
+        sessionId={sessionId}
+        accessToken={accessToken}
+        isTerminal={isTerminal}
+        isAdmin={isAdmin}
+      />
     </div>
   );
 }

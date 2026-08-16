@@ -483,6 +483,16 @@ class Settings(BaseSettings):
     # this project's V1 scope, while still being meaningfully shorter-lived
     # than a full access token's own default (ACCESS_TOKEN_EXPIRE_MINUTES).
     STREAM_TOKEN_EXPIRE_MINUTES: int = 30
+    # Phase 22 (Resolution 1): a SEPARATE knob from STREAM_TOKEN_EXPIRE_MINUTES
+    # rather than reusing it directly — same "short-lived, single-purpose
+    # media token" mechanism (stream_token.py), but a genuinely distinct
+    # resource, so a future operational reason to tune one lifetime without
+    # touching the other (e.g. heatmap viewing tends to involve switching
+    # between 5 types/timestamps within one session, a different usage
+    # shape than a single continuous video playback) shouldn't require
+    # coupling them. Same 30-minute default as video for now — no real
+    # usage data yet suggests a different value is warranted.
+    HEATMAP_TOKEN_EXPIRE_MINUTES: int = 30
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")

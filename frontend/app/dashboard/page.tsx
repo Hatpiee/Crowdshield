@@ -79,6 +79,7 @@ export default async function DashboardPage({
           videoId={detailBody.data.video_id}
           accessToken={session?.access_token ?? ""}
           initialStatus={statusBody.data}
+          isAdmin={session?.role === "ADMIN"}
         />
       </div>
     </div>
