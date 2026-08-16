@@ -2017,3 +2017,177 @@ incident, it was present and functional. The real server-side enforcement
 (`require_role(Role.ADMIN)`, Phase 19) was never touched this phase — the
 frontend check (`isAdmin` prop, `session?.role === "ADMIN"`) is exactly the
 UX-courtesy-only gate the frozen decision requires.
+
+## Phase 23: Incident Drill-Down — Resolution 1 (Extend, Don't Duplicate)
+
+`GET /api/v1/incidents/{id}`'s `linked_evidence` field type changed from
+`List[IncidentEvidenceRead]` (id-only) to `List[IncidentTimelineEntryRead]`,
+nesting the REAL, already-existing `EvidencePackageRead` (Phase 16) and
+`DecisionResultRead` (Phase 17/18, already nesting verification +
+supersession) per entry — no new route, per this project's established
+"extend, don't duplicate" precedent (Phase 12/13/16/18/21). The now-unused
+`IncidentEvidenceRead` schema was deleted rather than left dead.
+Conversion reuses `evidence.py`'s own `_to_read` and `decisions.py`'s own
+`_decision_to_read` DIRECTLY (imported across modules) — no duplicated
+field-mapping logic for either nested shape.
+
+**Confirmed Phase 22's incidents-list widget renders unaffected**: it never
+reads `linked_evidence` at all (only `lifecycle_status`/`priority`/
+`acknowledged`/`latest_recommendation`/`created_at`/`updated_at`/
+`closure_reason`/`id`) — `test_incidents_list_widget_shape_unaffected_by_timeline_nesting`
+asserts those exact fields are still present and correctly shaped after the
+schema change. The LIST route (`GET /sessions/{id}/incidents`) also now
+returns the fuller nested shape per incident (Resolution 1 doesn't split
+list vs. detail formatting) — heavier than strictly needed for the list
+widget's own use, but correct and not a regression; a candidate for a
+lighter list-specific projection if this ever becomes a real measured cost.
+
+**A real gap found and fixed, not anticipated by Resolution 1's own
+"no further schema work needed" framing**: `EvidencePackageRead` was
+missing `vision_observations_present` and `predictive_projection_snapshot`
+— both real, already-persisted `EvidencePackage` columns, but never
+exposed by this schema before (Phase 16 built it before either field had a
+real consumer). Step 5's own explicit requirements (VLM-call-failed
+handling; predictive trend narrative) genuinely need both. Added them —
+newly SURFACED data, not new computation, consistent with this phase's own
+"assembly and presentation" framing.
+
+**`OperatorActionRead` gained `performed_by_email`**: the drill-down page's
+Operator Actions history needs a human-readable identity per entry, not a
+raw user id. Resolved via one small, batched `User` lookup in
+`api/incidents.py`'s own `_operator_actions_to_read` (not a per-action
+query) — this schema is no longer constructed via a bare
+`.model_validate(row)` against the plain ORM row, which has no email of
+its own.
+
+## Phase 23: Resolution 2 — Evidence Tokens Reuse the Generalized Mechanism a Third Time
+
+`generate_evidence_access_token`/`validate_evidence_access_token` are thin
+wrappers over the SAME `_generate_scoped_token`/`_validate_scoped_token`
+helpers Phase 22 already extracted, purpose `"stream:evidence"`. ONE
+evidence token, scoped to one `evidence_package_id`, is valid for BOTH the
+frame image and the ROI crop image — confirmed by
+`test_one_evidence_token_works_for_both_frame_and_roi_images`. Cross-scope
+rejection (video/heatmap/evidence tokens mutually non-replayable) is
+proven both directions for all three scope pairs in
+`test_evidence_token.py`. `EVIDENCE_TOKEN_EXPIRE_MINUTES=60` — a longer
+default than the other two media-token types (30 min) — is a deliberate,
+reasoned choice: the drill-down page is a forensic/audit view an operator
+may keep open significantly longer than a live-monitoring session.
+
+## Phase 23: Resolution 3 — VLM Region-Coordinate Space Was Already Unambiguous (a Different Answer Than Guessed)
+
+Investigation of the ACTUAL prompt wording (`minicpm_vlm.py`'s
+`SANITIZATION_SYSTEM_PROMPT`, "CRITICAL FORMAT RULE: every 'region' field's
+x_min/y_min/x_max/y_max MUST be FRACTIONS of the FULL FRAME's dimensions")
+and `NormalizedBoundingBox`'s own docstring (`vision_observation.py`,
+"relative to whichever image the model was actually looking at (the full
+representative frame — see minicpm_vlm.py for exactly which image
+coordinates this is grounded against)") confirms this was **already
+unambiguously pinned down in Phase 14** — just never surfaced to a human
+before this phase. This is the OPPOSITE of the phase brief's own "most
+likely, and most useful" guess (the ROI crop) — a real finding from reading
+the actual code, not a confirmation of the assumption. **No prompt change
+was made** (Resolution 3's own instruction: only genuinely ambiguous
+wording warrants an edit). The bounding-box overlay
+(`EvidenceImages.tsx`) is drawn on the REPRESENTATIVE FRAME image, not the
+ROI crop, to correctly match the real coordinate space — confirmed visually
+during Step 7 verification: the overlay box lands over the same real
+scene feature (a synthetic red-circle test marker from an earlier phase's
+own fixture data) that the ROI crop image is a zoomed crop of, in both
+images independently.
+
+## Phase 23: Step 7 Real Verification — Findings
+
+**A real, valuable negative finding on the "superseded decision" UI case**:
+`IncidentTimeline.tsx` correctly implements the `superseded_decision_id`
+display branch, but investigation found it is STRUCTURALLY UNREACHABLE
+through any real incident's timeline, by this project's own existing
+design — `incident_service.is_decision_incident_worthy` (Phase 19) requires
+`superseded_by is None`, so a decision that fails Phase 18 verification and
+gets superseded by a fallback ABSTAIN is explicitly excluded from ever
+correlating into an incident in the first place. Confirmed no
+superseded/failed-verification row exists anywhere in the real dev
+database (0 rows with `passed=false` or a non-null
+`superseding_decision_id`). Constructing one artificially and forcing it
+into an incident's timeline would require bypassing this real, intentional
+business rule — dishonest test construction, not "a quick, genuine
+synthetic case." Per Step 7 item 5's own explicit permission, this is
+reported honestly rather than faked: the VERIFIED (`passed=true`) case IS
+real, available, and was screenshotted (incident `144582d9-...`, decision
+`f8072a36-...`, all 6 verification dimensions showing OK); the SUPERSEDED
+case cannot be genuinely demonstrated through this page by design.
+
+**A real hydration bug found and fixed during verification**: every
+`new Date(...).toLocaleString()` call with no explicit locale/options
+depends on the RUNNING PROCESS's own default locale — harmless for a pure
+Server Component (whose output never re-executes client-side), but a real
+React hydration-mismatch error for `IncidentTimeline.tsx` specifically,
+since it is a Client Component that receives `incident` (containing
+datetime strings) as a prop originating from a Server Component's fetch,
+meaning it genuinely renders BOTH server-side (Node's locale) and
+client-side (the browser's locale) during hydration. Fixed via a new
+shared `lib/formatDate.ts` (`formatDateTime`, explicit
+`"en-US"`/`dateStyle`/`timeStyle`), applied to `IncidentTimeline.tsx` (the
+only component that actually exhibited the error) and defensively to
+`IncidentsList.tsx` too (which was never actually at risk — its `incidents`
+state starts empty and is only ever populated client-side via
+`useEffect`, so no SSR-computed date value existed for it to mismatch
+against — but the fix is free and removes any doubt). Confirmed via a
+dedicated re-run: zero console errors after the fix, both on the rich
+incident (clicking through all 3 timeline entries) and the now-terminal
+resolved incident.
+
+**Real operator action performed from this specific page, psql-confirmed**:
+clicked Resolve on incident `1ef416c7-...` directly from `/incidents/{id}`
+(not the dashboard list widget) — `incidents.lifecycle_status` genuinely
+became `RESOLVED`/`closure_reason=RESOLVED`, and a real new
+`operator_actions` row was inserted (`RESOLVE`,
+`performed_by=<the real operator test user's id>`), confirmed by direct
+query. A follow-up visit to the same now-terminal incident confirmed ZERO
+action buttons render (Acknowledge/Dismiss/Resolve/Mark False
+Positive/Escalate all correctly hidden) — the same "don't show invalid
+actions for the current state" rule, now proven on a genuinely terminal
+real incident via this page specifically, not just the list widget.
+
+**Timeline entry switching, confirmed by direct visual comparison** (not a
+flaky text-diff assertion, which proved unreliable against this page's DOM
+shape): screenshots of the default-selected (most recent) entry and a
+manually-selected different (oldest) entry show different frame numbers
+(#181 vs #178), different VLM observation ids, different reasoning text,
+and a different bounding-box position — genuinely different real content
+per entry, not a static/cached panel.
+
+## Phase 23 Follow-Up: Multi-Observation Overlay — Confirmed Correct, One Real Polish Gap Closed
+
+Real data has never yet produced more than one VLM observation per
+evidence package, so Step 7's own verification only ever exercised a
+single-box case. Reviewed `EvidenceImages.tsx`'s overlay code directly: it
+maps over the FULL `observations` array (not `.slice(0, 1)` or similar),
+positioning EACH box independently from its OWN `region` — structurally
+correct for any N, not just N=1.
+
+Confirmed empirically, not just by inspection: built a REAL synthetic
+2-observation incident via the SAME real `EvidenceBuilder`/
+`incident_service` code paths this project's own tests already use (two
+VisionObservations with genuinely different, non-overlapping regions —
+top-left and bottom-right quadrants), then visited it in a real browser.
+Both boxes rendered at pixel-exact positions matching their own regions
+(verified against the frame image's own bounding box arithmetically, not
+just "looked about right") — confirming the code was ALREADY correct on
+the core question: one distinct, correctly-positioned box per observation,
+not just the first one, not overlapping.
+
+**One real, if minor, gap found and fixed**: with 2+ same-colored amber
+boxes, the only way to tell which box belonged to which VLM Observation
+card was a hover-only `title=` tooltip — no persistent visual link. Fixed
+by adding a small numbered index badge to each overlay box AND the
+matching number to each VLM Observation card (`IncidentTimeline.tsx`) —
+both iterate the exact same `pkg.evidence_items` array in the exact same
+order, so index `i` always refers to the same observation in both places.
+Re-verified with the same real synthetic 2-observation incident: box "1"
+now visibly correlates to card "1" (BOTTLENECK), box "2" to card "2"
+(VISIBLE_HAZARD), zero console errors. The synthetic incident
+(`ee1864c0-3a05-4991-ab9c-79677a2a68d4`) was left in the dev database as
+real verification evidence, same "keep real verification artifacts"
+precedent as Phase 20-23's own prior real test-session data.

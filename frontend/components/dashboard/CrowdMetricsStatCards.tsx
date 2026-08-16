@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-import type { CrowdMetricsSnapshotItem } from "@/lib/types";
+import type { CrowdMetricsStatFields } from "@/lib/types";
 
 // density.py's own confidence tiers: 1.0 (full KDE fit, the implicit
 // default), 0.85 (VORONOI_UNAVAILABLE_CONFIDENCE), 0.5
@@ -39,7 +39,7 @@ const CARD_LABELS = ["Density", "Pressure", "Congestion", "Flow"];
 export default function CrowdMetricsStatCards({
   current,
 }: {
-  current: CrowdMetricsSnapshotItem | null;
+  current: CrowdMetricsStatFields | null;
 }) {
   if (!current) {
     return (

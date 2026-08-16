@@ -55,6 +55,61 @@ def test_get_incident_happy_path(client, db_session, make_video, test_user, auth
     assert response.json()["data"]["id"] == str(incident.id)
 
 
+def test_get_incident_timeline_nests_full_evidence_and_decision(
+    client, db_session, make_video, test_user, auth_headers
+):
+    # Phase 23, Resolution 1: linked_evidence entries now nest the REAL,
+    # full EvidencePackageRead + DecisionResultRead (not just ids), ordered
+    # chronologically by correlated_at.
+    session, incident = _setup_incident(db_session, make_video, test_user)
+
+    response = client.get(f"/api/v1/incidents/{incident.id}", headers=auth_headers)
+    assert response.status_code == 200
+    timeline = response.json()["data"]["linked_evidence"]
+    assert len(timeline) == 1
+
+    entry = timeline[0]
+    assert set(entry.keys()) == {"evidence_package", "decision_result", "correlated_at"}
+
+    package = entry["evidence_package"]
+    assert package["session_id"] == str(session.id)
+    assert "trigger_reason" in package
+    assert "crowd_metrics_summary" in package
+    assert len(package["evidence_items"]) == 1
+    # No raw filesystem paths leaked anywhere in this response.
+    assert "representative_frame_path" not in package
+    assert "roi_crop_path" not in package
+    body_text = response.text
+    assert "representative_frame_path" not in body_text
+    assert "roi_crop_path" not in body_text
+    assert "hashed_password" not in body_text
+
+    decision = entry["decision_result"]
+    assert decision["evidence_package_id"] == package["id"]
+    assert "reasoning_summary" in decision
+    assert "binding_constraint" in decision
+
+
+def test_incidents_list_widget_shape_unaffected_by_timeline_nesting(
+    client, db_session, make_video, test_user, auth_headers
+):
+    # Confirms Phase 22's incidents-list widget (which reads only
+    # lifecycle_status/priority/acknowledged/latest_recommendation/
+    # created_at/updated_at/closure_reason/id — never linked_evidence) still
+    # renders correctly: those exact fields are still present and correctly
+    # shaped after Resolution 1's linked_evidence schema change.
+    session, incident = _setup_incident(db_session, make_video, test_user)
+
+    response = client.get(f"/api/v1/sessions/{session.id}/incidents", headers=auth_headers)
+    assert response.status_code == 200
+    item = response.json()["data"]["items"][0]
+    for field in (
+        "id", "lifecycle_status", "closure_reason", "priority", "acknowledged",
+        "latest_recommendation", "created_at", "updated_at",
+    ):
+        assert field in item
+
+
 def test_get_incident_not_found(client, auth_headers):
     response = client.get(f"/api/v1/incidents/{uuid.uuid4()}", headers=auth_headers)
     assert response.status_code == 404

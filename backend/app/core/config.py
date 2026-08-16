@@ -493,6 +493,19 @@ class Settings(BaseSettings):
     # coupling them. Same 30-minute default as video for now — no real
     # usage data yet suggests a different value is warranted.
     HEATMAP_TOKEN_EXPIRE_MINUTES: int = 30
+    # Phase 23 (Resolution 2): same shared scoped-token mechanism again, for
+    # evidence frame/ROI images. A SEPARATE knob from the other two for the
+    # same reason as HEATMAP_TOKEN_EXPIRE_MINUTES (independent future
+    # tunability) — but a longer default (60 vs. 30 minutes) is deliberate
+    # here: the incident drill-down page (§24) is a forensic/audit
+    # inspection view an operator may reasonably keep open significantly
+    # longer than a single live-monitoring session while reviewing WHY an
+    # incident was raised, comparing multiple timeline entries back and
+    # forth — a shorter expiry would risk a real, disruptive re-auth mid-
+    # review for no security benefit (this token is still narrowly scoped
+    # to one evidence_package_id's own two images, same as the other two
+    # media-token types).
+    EVIDENCE_TOKEN_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")

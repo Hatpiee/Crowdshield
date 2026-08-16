@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -34,6 +35,12 @@ class EvidencePackageRead(BaseModel):
     trigger_reason: str
     crowd_metrics_summary: dict
     risk_state_snapshot: dict
+    # Phase 23, Step 5: two real, already-persisted EvidencePackage columns
+    # that were never exposed in this schema before — genuinely needed by
+    # the incident drill-down page (VLM-call-failed handling, predictive
+    # trend narrative), not new computation, just newly surfaced.
+    vision_observations_present: bool
+    predictive_projection_snapshot: Optional[dict]
     confidence: float
     binding_constraint: str
     complete: bool

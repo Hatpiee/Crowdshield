@@ -17,6 +17,16 @@ signatures and external behavior — no caller of `generate_stream_token`/
 `validate_stream_token` needs to change) and the new heatmap-specific ones
 (`generate_heatmap_access_token`/`validate_heatmap_access_token`).
 
+Phase 23, Resolution 2: the SAME limitation, a third time, for evidence
+frame/ROI images — two more thin public wrappers
+(`generate_evidence_access_token`/`validate_evidence_access_token`) call
+the SAME shared helpers, purpose `"stream:evidence"`. ONE evidence token,
+scoped to one `evidence_package_id`, is valid for BOTH that package's
+frame image and ROI image (they are always viewed together in the
+drill-down UI) — which image a request gets back is determined purely by
+which route it hits (`/evidence/{id}/frame-image` vs
+`/evidence/{id}/roi-image`), not encoded in the token itself.
+
 CLAIM DESIGN: reuses PyJWT and JWT_SECRET_KEY (already a dependency/secret
 since Phase 2) but each scope is a DISTINCT semantic "purpose" claim value
 — `"stream:video"` and `"stream:heatmap"` (mirroring security.py's own
@@ -50,6 +60,7 @@ from app.core.config import settings
 ALGORITHM = "HS256"
 VIDEO_STREAM_TOKEN_PURPOSE = "stream:video"
 HEATMAP_ACCESS_TOKEN_PURPOSE = "stream:heatmap"
+EVIDENCE_ACCESS_TOKEN_PURPOSE = "stream:evidence"
 
 
 class StreamTokenError(Exception):
@@ -62,6 +73,12 @@ class HeatmapAccessTokenError(Exception):
     """Same uniform-401 treatment as StreamTokenError, for the heatmap
     /image route — invalid signature, expired, wrong purpose, or issued
     for a different heatmap_id."""
+
+
+class EvidenceAccessTokenError(Exception):
+    """Same uniform-401 treatment as StreamTokenError/HeatmapAccessTokenError,
+    for the evidence frame-image/roi-image routes — invalid signature,
+    expired, wrong purpose, or issued for a different evidence_package_id."""
 
 
 def _generate_scoped_token(
@@ -123,4 +140,19 @@ def generate_heatmap_access_token(heatmap_id: uuid.UUID, user_id: uuid.UUID) -> 
 def validate_heatmap_access_token(token: str, heatmap_id: uuid.UUID) -> uuid.UUID:
     return _validate_scoped_token(
         token, HEATMAP_ACCESS_TOKEN_PURPOSE, heatmap_id, HeatmapAccessTokenError
+    )
+
+
+def generate_evidence_access_token(evidence_package_id: uuid.UUID, user_id: uuid.UUID) -> str:
+    return _generate_scoped_token(
+        EVIDENCE_ACCESS_TOKEN_PURPOSE,
+        evidence_package_id,
+        user_id,
+        settings.EVIDENCE_TOKEN_EXPIRE_MINUTES,
+    )
+
+
+def validate_evidence_access_token(token: str, evidence_package_id: uuid.UUID) -> uuid.UUID:
+    return _validate_scoped_token(
+        token, EVIDENCE_ACCESS_TOKEN_PURPOSE, evidence_package_id, EvidenceAccessTokenError
     )
