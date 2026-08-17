@@ -47,6 +47,7 @@ respect.
 |---|---|---|---|
 | `ByteTrackAdapter` / `trackers.ByteTrackTracker` enforces strict timestamp monotonicity | Phase 8→9 bridging check — two-pass memory investigation (`scripts/preview_full_pipeline.py`) | The underlying library silently no-ops any `update()` call whose `timestamp` is earlier than one it has already seen on that instance. Confirmed empirically, not assumed: re-running the same 300-frame span through the SAME tracker instance a second time triggered exactly 300 `UserWarning: ... timestamp X is earlier than the previous timestamp ... Skipping update` warnings — one per frame — with the tracker doing essentially nothing (no real association, no state update) for the entire second pass, even though the frames themselves were valid and detection/optical-flow processed them normally. | A single `Tracker` instance must process exactly ONE continuous, monotonically-increasing pass through one video, start to finish — it must never be restarted, replayed, or fed frames out of temporal order. This is in addition to (not a replacement for) Phase 7's existing "never reuse a Tracker instance across two different videos" rule. The not-yet-built AnalysisOrchestrator (§28) must construct a fresh `ByteTrackAdapter` per video/session and must never re-feed it a session that could produce a non-increasing `timestamp_seconds` sequence — e.g. a naive retry/replay path that just calls `update()` again from frame 0 would silently produce near-empty tracking output with no hard error. |
 | **[FIXED]** `PressureProjector`'s TIME-based rolling window did NOT gracefully handle a non-monotonic/reset timestamp sequence — unlike `ByteTrackAdapter`, it did not no-op, it silently over-retained | Discovered: Phase 11→12 bridging check — two-pass replay run (`scripts/preview_full_crowd_intelligence_bridging.py`). Fixed: immediate bug-fix follow-up task (`predictive_projection.py`, `PressureProjector.update()`). | ORIGINAL DEFECT: `update()`'s prune step (`cutoff = latest_timestamp - PREDICTIVE_WINDOW_SECONDS`, keep only entries with `t >= cutoff`) assumed `latest_timestamp` only ever increases. Confirmed empirically on a 600-frame two-pass replay of the same video through the SAME `PressureProjector` instance: Pass 1's `data_points_used` stayed correctly bounded (max 301, matching `PREDICTIVE_WINDOW_SECONDS=10.0s` @ 30fps). At the start of Pass 2, `latest_timestamp` dropped back to ~0s (the replayed video's own timestamps restart from 0) while the window still held Pass 1's tail entries (timestamps ~10-20s) — the resulting `cutoff` became negative, so nothing got pruned, and the window ballooned to `data_points_used=602` by the end of Pass 2. NOT a genuine memory leak in absolute terms (small `(float, float)` tuples, a few KB even at 2x size) and NOT visible under RSS measurement — a CORRECTNESS defect in the window-bound invariant, not a memory-safety one. THE FIX: `update()` now compares each new `pressure.timestamp_seconds` against the window's current latest entry BEFORE appending anything; if the new timestamp is `<=` the latest one already held, the update is REJECTED — logged via `logger.warning` (this module's own `logging.getLogger(__name__)`, matching the codebase's existing convention in `app/api/auth.py`, since there is no `warnings.warn` convention of this project's own to mirror — the ByteTrackAdapter warning the task referenced comes from the third-party `trackers` library, not from this codebase), the existing window is left completely untouched, and the rejection is made OBSERVABLE via a new `PressureProjector.last_update_rejected: bool` attribute (never just logged-and-forgotten, per this project's "never fail silently" principle) — `update()` also returns `None` for a rejected call, same as its existing "not enough data yet" case, but the two are now distinguishable via `last_update_rejected`. RE-VERIFIED after the fix: re-running the same 600-frame two-pass bridging script now shows Pass 2 emitting exactly 599 rejection warnings (one per frame, since every Pass-2 timestamp is `<=` Pass 1's final timestamp under full-video replay) and `projection_available_count=0` for Pass 2 — `data_points_used` never exceeds Pass 1's correctly-bounded max of 301 anywhere in the run. | Now mirrors `ByteTrackAdapter`'s FAILURE MODE, not just its underlying constraint: a `PressureProjector` instance, like a `Tracker` instance, must be fed exactly ONE continuous, monotonically-increasing pass through one video — but a violation is now safely rejected (loud warning + observable flag + untouched state) rather than silently corrupting the window's time-bound invariant. The not-yet-built AnalysisOrchestrator (§28) must still apply the "exactly one fresh instance per video/session, never replayed" discipline (this fix is a safety net against MISUSE, not a license to replay), but a misuse bug in that future orchestration code would now be caught via `last_update_rejected` and the warning log instead of manifesting as silent over-retention. Regression-tested in `test_predictive_projection.py` (`test_non_monotonic_timestamp_is_rejected_not_silently_absorbed`, `test_monotonic_operation_completely_unaffected_by_rejection_guard`). |
+| **[FIXED]** `AnalysisOrchestrator._commit_with_retry`'s FIRST draft retried a bare `db.commit()` — which silently commits NOTHING on the retry, because the prior failed attempt's own required `db.rollback()` expires every ORM object tracked by the session, reverting the in-memory `.status = COMPLETED` assignment made just before the failed commit | Discovered: this §29 DB-failure follow-up's own Item 3 test — `test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed`, written BEFORE the fix, genuinely failed against the first-draft retry helper. | ORIGINAL DEFECT: the terminal-status-write retry (`_commit_with_retry`, added to make a single transient DB blip at the very end of a run recoverable rather than misreporting a successful run as FAILED) looped `try: db.commit(); except _TRANSIENT_DB_ERRORS: db.rollback(); retry`. This looks correct in isolation, but SQLAlchemy's `Session.rollback()` doesn't just abort the failed transaction — by default it EXPIRES every object the session is tracking, so their attributes are reloaded from the database (not from memory) on next access. `processing_run.status = ProcessingRunStatus.COMPLETED` had already been assigned to the in-memory object BEFORE the failed `db.commit()` call; the subsequent `db.rollback()` silently reverted that assignment. The RETRY's own `db.commit()` therefore had genuinely NOTHING pending to persist — it succeeded (no exception), but committed an empty transaction. Caught empirically: injecting exactly one transient `OperationalError` on the terminal write's first attempt left the real database row at `ProcessingRunStatus.RUNNING` / `SessionStatus.PROCESSING` even though the test's own commit-count assertion confirmed a second, "successful" commit attempt had genuinely run. THE FIX: `_commit_with_retry` now takes a required `apply_changes` callable and invokes it immediately before EVERY `db.commit()` attempt, not just the first — the intended status assignment is re-applied fresh on each retry, so a retry that reaches `db.commit()` always has real, current pending changes to persist. Applied at BOTH call sites (the success-path terminal write AND the exception-path fallback FAILED-status write), since both share the exact same rollback-then-retry shape. RE-VERIFIED: the same previously-failing test now passes — the retried commit genuinely persists `COMPLETED`, confirmed by re-reading the row from a separate DB session after `run()` returns. | Any FUTURE retry-around-a-mutating-commit pattern in this codebase must re-apply the intended ORM attribute changes on every attempt, never assume a rolled-back session's in-memory state survives the rollback — `db.rollback()` is not merely "clear the failed transaction," it is "revert every pending in-memory change back to what the database currently holds." A bare "retry the same commit() call" pattern is a trap that passes a shallow test (no exception raised) while silently doing nothing. Regression-tested in `test_analysis_orchestrator.py` (`test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed`, `test_sustained_outage_across_multiple_consecutive_checkpoints_recovers_cleanly` — the latter also confirms repeated rollbacks across THREE consecutive failed cycles don't accumulate corrupted session state). |
 | Stale `.env` placeholder thresholds silently shadow Phase 13's new calibrated `RISK_ELEVATED_THRESHOLD`/`RISK_CRITICAL_THRESHOLD`/`RISK_INCIDENT_THRESHOLD` defaults, and interact badly with the new `RISK_STATE_FALL_HYSTERESIS_MARGIN` | Discovered running `scripts/preview_risk_trigger.py` against `people_clip.mp4` (Phase 13) | These three keys are PRE-EXISTING (Phase 1 placeholders, 0-1 scale: `0.5`/`0.75`/`0.9`) and the developer's real `.env` already sets them — pydantic-settings' env-file source takes precedence over `config.py`'s class defaults, so this phase's new, real, 0-100-scale-calibrated defaults (`40.0`/`65.0`/`85.0`) are silently shadowed in this environment (this project never edits the developer's real `.env`). Confirmed empirically: running the preview script under the live (stale) config, `people_clip.mp4`'s real `risk_score` values (typically 10-50 on the 0-100 scale) trivially exceed `0.5`/`0.75`, so the state machine escalated all the way to CRITICAL by frame 63 of 150 — NOT the expected calm/NORMAL behavior for this established sparse video. Worse, this ALSO silently broke de-escalation: `RISK_STATE_FALL_HYSTERESIS_MARGIN` (a genuinely NEW key, correctly defaulting to `10.0`, NOT present in the stale `.env`) combined with the stale `RISK_CRITICAL_THRESHOLD=0.75` produces `fall_critical = 0.75 - 10.0 = -9.25` — permanently negative, so NO non-negative `risk_score` (the type is clipped to `[0, 100]` by `compute_risk_score`) can ever satisfy `risk_score < fall_critical`, making de-escalation from CRITICAL mathematically unreachable under this specific stale-vs-fresh key mismatch. Re-running the SAME script with the three threshold keys overridden via one-off process environment variables (NOT the real `.env` — env vars take precedence over `.env` in pydantic-settings' source order, so this is a non-invasive way to demonstrate intended behavior) reproduced the CORRECT, expected result: 0 real-video transitions (state stayed NORMAL the whole run, matching Phase 9-11's own repeated "sparse/low-risk video" finding) and a clean synthetic NORMAL→ELEVATED→CRITICAL escalation with 2 RISK triggers (including the cooldown-override case) in the addendum. | The code is correct and behaves exactly as designed in both runs — this is a PURE environment-configuration issue, not a code defect. `scripts/preview_risk_trigger.py` now prints the ACTIVE threshold values plus a loud warning whenever they differ from `config.py`'s own authored defaults, specifically so this class of staleness is never mistaken for a logic bug. `backend/tests/conftest.py`'s `_risk_thresholds_from_code_defaults` autouse fixture shields the test suite from this same issue by forcing `config.py`'s class defaults for these seven keys regardless of local `.env` content. **Action needed from the developer** (out of scope for this session — real `.env` is never edited here): update the real `.env`'s `RISK_ELEVATED_THRESHOLD`/`RISK_CRITICAL_THRESHOLD`/`RISK_INCIDENT_THRESHOLD` lines to match `.env.example`'s new `40.0`/`65.0`/`85.0` before relying on this phase's escalation behavior outside of tests/explicit env-var overrides. |
 | Stale `.env` placeholder `VLM_MODEL` silently shadows Phase 14's new `minicpm-v4.6:q4_K_M` default | Discovered running `scripts/preview_vision_intelligence.py` and `test_minicpm_vlm.py` against the real environment (Phase 14) | Exactly the same class of issue as the `RISK_*` threshold row above, now affecting `VLM_MODEL`: the developer's real `.env` still sets the Phase 1 placeholder `VLM_MODEL=placeholder-vlm`, which pydantic-settings' env-file source prioritizes over `config.py`'s new default. Constructing `MiniCPMVisionModel()` under the live (stale) config fails immediately with `VLMUnavailableError` (`"placeholder-vlm" is not a pulled tag`) — a real, reproducible failure, not a hypothetical one. | Not a code defect — `MiniCPMVisionModel.__init__` is working exactly as designed (§29 fail-fast). `backend/tests/conftest.py`'s `_vlm_model_from_code_default` autouse fixture shields the test suite; `scripts/preview_vision_intelligence.py` prints the same active-vs-code-default diagnostic warning as the risk-threshold case; both this phase's test run and preview script run were executed with a one-off `VLM_MODEL=minicpm-v4.6:q4_K_M` process environment variable override (not the real `.env`) to demonstrate real, working inference. **Action needed from the developer**: update the real `.env`'s `VLM_MODEL` line to match `.env.example`'s new `minicpm-v4.6:q4_K_M` before relying on Vision Intelligence outside of tests/explicit env-var overrides. |
 | Ollama's `format` JSON-schema constraint enforces structure but NOT numeric `minimum`/`maximum` bounds — MiniCPM-V 4.6 needs an EXPLICIT WORDED instruction to emit normalized `region` coordinates | Discovered via direct empirical probing of the real pulled model (`ollama.Client.chat(..., format=schema)`) before writing `minicpm_vlm.py` | `VisionObservation.region`'s schema declares `x_min`/`y_min`/`x_max`/`y_max` as `ge=0.0, le=1.0`. Empirically, with only the schema constraint and a system prompt that did NOT explicitly restate the numeric range in words, the model reliably emitted raw pixel-like integers (e.g. `{"x_min": 200, "y_max": 400}` on a 640x480 image) — violating the declared bound every time observations were non-empty, even though the JSON Schema literally states `"maximum": 1.0`. Adding an explicit worded instruction to the system prompt ("region values MUST be fractions between 0.0 and 1.0, NEVER pixel counts like 250 or 480") fixed this — re-tested and confirmed the model then emitted correctly normalized floats. | `SANITIZATION_SYSTEM_PROMPT` in `minicpm_vlm.py` includes this explicit wording as a permanent, non-optional part of every request (not just on retry). This ALSO empirically justifies decision #5's defensive re-validation (`§30`, "never treated as trusted raw text") as a REAL, exercised safeguard rather than a theoretical one — Ollama's `format=` constraint alone is demonstrably insufficient for numeric-range correctness, only for structural/type correctness. Logged here so a future reader doesn't assume `format=schema` alone guarantees schema-COMPLIANT (as opposed to merely schema-SHAPED) output for any model. |
@@ -1575,6 +1576,23 @@ force-kill is not addressed. Full orphaned-session recovery (a startup
 reconciliation pass, or a heartbeat/liveness mechanism) is legitimate
 future/production-hardening work, out of scope for this phase.
 
+**Cross-reference (added during the §29 DB-failure follow-up, Testing
+Audit phase)**: the "§29 DB-Failure Fix Follow-Up" section further down
+this file documents a run genuinely left stuck at `RUNNING`/`PROCESSING`
+when the database is durably unreachable exactly at the terminal-status
+write, even after all retried attempts (both the primary write and its
+own fallback FAILED-write) are exhausted. That is NOT a second, separate
+gap — it is this SAME underlying gap (no mechanism exists anywhere in this
+codebase to detect and reconcile a `RUNNING`/`PROCESSING` row whose owning
+thread/process can no longer act on it), reached via a different trigger:
+here, the OWNING THREAD is alive and still trying, but the DATABASE itself
+is unreachable; there, the database is fine but the OWNING PROCESS is
+gone. Both produce the identical symptom (a stuck row with no automatic
+recovery) and both require the identical class of fix (a startup/periodic
+reconciliation pass — out of scope for both the phase that first accepted
+this limitation and the follow-up that rediscovered it from the other
+direction).
+
 ## Phase 20: Two Real Bugs Found and Fixed During Testing
 
 **Bug 1 — `POST /sessions/{id}/start`'s own response could non-deterministically
@@ -2191,3 +2209,254 @@ now visibly correlates to card "1" (BOTTLENECK), box "2" to card "2"
 (`ee1864c0-3a05-4991-ab9c-79677a2a68d4`) was left in the dev database as
 real verification evidence, same "keep real verification artifacts"
 precedent as Phase 20-23's own prior real test-session data.
+
+## Testing Audit Phase: §34 Gap Analysis — 3 Real Gaps Closed, 1 Real Production Defect Found and Fixed
+
+Full write-up: `TEST_COVERAGE_REPORT.md` (repo root, new artifact — same
+category as `SECURITY_VALIDATION_REPORT.md` from Phase 15). Summary here
+for anyone scanning this file's own chronological trail.
+
+**Method**: every one of §34's 20 named test cases was independently
+verified by grepping/reading the real test files, not by trusting memory
+of what "should" already exist. The architect's own 4 suspected gaps (#2
+High-density crowd, #17 Active incident at video end, #19 DB-failure
+handling, #14 Operator false positive at real UI level) were all
+independently confirmed real. No case outside that list of 4 turned out to
+be secretly missing.
+
+**#2 High-density crowd — closed** (`backend/tests/test_high_density_crowd.py`,
+3 new tests): a real 40-point tightly-packed synthetic `TrackingResult`
+run through the REAL `compute_density_field` → `compute_congestion_field`
+→ `compute_risk_score` chain — no existing test had ever done this;
+`test_congestion.py`'s "high density" tests hand-set `DensityField`
+objects directly. Real finding while building this: the current default
+`DENSITY_CONGESTION_THRESHOLD` (0.1 people/cell) is low enough, relative
+to the 40px grid, that even a spread-out (not packed) crowd's KDE tail can
+locally exceed it — making "fraction of cells congested" an unreliable
+packed-vs-spread signal under the current, explicitly-uncalibrated
+thresholds. Recalibrating those thresholds is out of scope for a
+testing-audit phase (already flagged in-code as unvalidated engineering
+judgment pending real camera calibration); the tests instead compare the
+same packed crowd under stalled vs. flowing motion — congestion.py's own
+frozen, intentional design axis — which is robust and correctly
+distinguishes a dangerous stuck-dense crowd from the same crowd flowing
+freely.
+
+**#17 Active incident at video end — closed**
+(`test_analysis_orchestrator.py::test_active_incident_not_auto_resolved_when_video_ends`):
+zero existing orchestrator test ever exercised
+`analysis_orchestrator.py`'s own real incident-correlation call — every
+synthetic clip used elsewhere in that file is deliberately too
+short/uniform to cross a real confirmed risk escalation (documented in the
+file's own top docstring). New test forces two real `_run_loop_b` calls
+(fake Reasoner/Verifier, same technique this file already established) 10s
+apart to genuinely reach `ACTIVE` through the orchestrator's own real
+wiring, then runs a real, separate `orchestrator.run()` to completion on
+the same session — confirms `ProcessingRun`/`AnalysisSession` reach
+`COMPLETED` while the incident stays `ACTIVE`, untouched.
+
+**#19 Backend/database failure handling — closed, AND a real production
+defect found and fixed**: §29 claims "Live pipeline does not depend on DB
+availability for in-flight processing." Tested literally: a new test
+injects one synthetic transient `OperationalError` on the orchestrator's
+own session, exactly at the first periodic in-loop persistence checkpoint.
+**Against the pre-fix code, this crashed the entire run to FAILED** — the
+exact opposite of §29's promise. Root cause: `_run_loop_a`'s periodic
+checkpoint and its per-frame `risk_state_service.record_transition_if_confirmed`
+call had no local error handling; any exception there propagated to
+`run()`'s single outermost catch-all, which treats a one-cycle persistence
+hiccup identically to a genuinely fatal pipeline failure. Fixed in
+`app/pipeline/analysis_orchestrator.py`: both call sites now have their
+own local `try/except` — log the failure, `db.rollback()` to clear the
+session's failed-transaction state, and continue Loop A to the next frame.
+Loop A's in-memory computation (detection/tracking/crowd
+intelligence/risk/trigger) already happens before any of these persistence
+calls, so it's genuinely unaffected; only that one cycle's persistence is
+skipped. Re-verified: the same injected failure now only skips one
+checkpoint, and the run reaches `COMPLETED` with every frame processed.
+This is the one case in this pass where gap analysis surfaced an actual
+bug, not just a missing test.
+
+**#14 Operator false positive at the real UI level — confirmed real,
+documented, not closed**: `DECISIONS.md`'s own Phase 22/23 entries show
+real Playwright clicks on Acknowledge, Escalate, and Resolve, each
+psql-confirmed — but never Mark False Positive or Dismiss, which have only
+ever been exercised via `pytest` against the service/API layer. Per this
+phase's own explicit guidance, not urgent enough to justify a dedicated
+new Playwright session on its own; recorded in `TEST_COVERAGE_REPORT.md`
+as "backend/API verified, real UI click-through not yet performed" rather
+than silently claimed as fully covered.
+
+**Final consolidated suite**: 343 passed, 0 failed, 852.33s (14:12) — one
+clean run, `pytest tests/ -v`, no concurrent process contention. 338
+pre-existing + 5 new (the 3 high-density-crowd tests plus the 2 orchestrator
+tests above). No git command was run at any point in this phase.
+
+## §29 DB-Failure Fix Follow-Up — Exception Scope Narrowed, Terminal-Write Retry Added (and a Real Bug in That Retry Found and Fixed), Loop B Gap Documented
+
+Careful re-review of the §29 fix above, at the same scrutiny level as
+Phase 20's own original orchestrator design. Five items; three real
+findings, one of them a genuine new bug this follow-up itself introduced
+and then caught before it could ship.
+
+**Item 1 — exception scope narrowed**: both mid-run except clauses
+(`_run_loop_a`'s per-frame risk-transition persistence and its periodic
+checkpoint) originally caught bare `except Exception`, exactly as flagged.
+Narrowed to a new module-level `_TRANSIENT_DB_ERRORS = (OperationalError,
+InterfaceError, SQLAlchemyTimeoutError)` tuple —
+`sqlalchemy.exc.OperationalError` (connection drops/timeouts),
+`InterfaceError` (DBAPI-level "connection already closed"), and
+`sqlalchemy.exc.TimeoutError` (connection-pool checkout timeout).
+Deliberately NOT the broader `sqlalchemy.exc.DBAPIError`, which also
+covers `IntegrityError`/`DataError`/`ProgrammingError` — those indicate a
+genuine data/logic bug (e.g. a real constraint violation from a defect
+elsewhere), not database unavailability, and must keep propagating to
+Decision E's FAILED path rather than being silently reinterpreted as
+"transient, continuing" forever. Verified with a new test
+(`test_non_db_bug_during_periodic_checkpoint_still_fails_the_run_not_swallowed`)
+that injects a synthetic `TypeError` at the exact same call site the DB
+fix protects — confirmed it still fails the run with a clear
+`error_message`, proving the narrower except clause does not (and, unlike
+the original bare `except Exception`, structurally cannot) swallow an
+unrelated real bug.
+
+**Item 2 — logging discoverability**: both mid-run degradation points now
+log at `logger.error(..., exc_info=True)` (not debug) with a stable,
+greppable `"§29 GRACEFUL DEGRADATION: ..."` prefix, so every occurrence of
+this exact failure category can be found with one grep across logs
+regardless of which of the two call sites (or the new terminal-write retry
+helper) produced it. The new terminal-write-exhausted worst case (Item 3)
+logs at `logger.critical` with its own `"§29 GRACEFUL DEGRADATION
+EXHAUSTED: ..."` prefix — deliberately louder than the per-cycle skip
+messages, since that specific case is the one where Decision E's guarantee
+genuinely cannot be kept from inside this method alone.
+
+**Item 3 — terminal-status-write retry, CRITICAL finding — and a bug in
+the fix itself**: confirmed the ORIGINAL §29 fix left exactly the gap
+suspected — a transient DB failure exactly at the FINAL terminal-status
+commit (after Loop A finishes and Loop B threads join) was a single-shot
+`db.commit()` with no protection, so it would propagate to the outer
+except and — if the fallback FAILED-write itself then also failed — leave
+the run genuinely stuck in `RUNNING`/`PROCESSING`. Added
+`AnalysisOrchestrator._commit_with_retry` (bounded: 3 attempts,
+1.0s apart, both tunable via module constants
+`_TERMINAL_COMMIT_MAX_ATTEMPTS`/`_TERMINAL_COMMIT_RETRY_DELAY_SECONDS`),
+applied to BOTH the success-path terminal write and the exception-path
+fallback FAILED-write.
+
+While writing the test for the "one transient blip, then recovery" case
+(`test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed`),
+the FIRST draft of `_commit_with_retry` itself failed that test — see the
+"Implementation-Discovered Constraints" entry above for the full story:
+`db.rollback()` after the failed first attempt EXPIRED the ORM objects and
+silently reverted the `.status = COMPLETED` assignment made just before
+that failed commit, so the "successful" retry actually committed an empty
+transaction, leaving the row at `RUNNING` forever. Fixed by having
+`_commit_with_retry` accept a required `apply_changes` callable, invoked
+fresh before every attempt, not just the first.
+
+Two tests now cover both ends of Item 3's spectrum:
+`test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed`
+(one blip, absorbed, run reaches `COMPLETED` — not misreported as FAILED)
+and
+`test_terminal_status_write_durable_outage_logs_critical_and_leaves_run_unresolved`
+(the database still unreachable after all 3+3 retried attempts across
+both the primary and fallback writes — confirmed a `CRITICAL` log fires
+and the run is honestly left at `RUNNING`/`PROCESSING`, `run()` itself
+still never raising to its caller even in this worst case). This second
+test is a **known, accepted, now-documented residual limit**, not a
+regression: no code running inside a single `run()` invocation can write a
+terminal status to a database that is durably (not transiently)
+unreachable. Closing this fully would require an external reconciliation
+process (e.g. a periodic sweep that finds `ProcessingRun` rows stuck in
+`RUNNING` past some staleness threshold and independently resolves them) —
+explicitly out of scope for this follow-up, itself a new, separate
+follow-up item.
+
+**This is the SAME gap as Phase 20's "Known, Accepted MVP Limitation — No
+Orphaned-Session Recovery on Restart" entry above, not a second, separate
+one.** Phase 20 already accepted that a `RUNNING`/`PROCESSING` row is left
+stuck with no automatic recovery if the OWNING PROCESS dies (server
+restart/crash) while the database itself is perfectly fine. This follow-up
+reaches the identical symptom (a stuck row, no automatic recovery) from
+the opposite direction: the owning thread is alive and actively retrying,
+but the DATABASE is durably unreachable. Different trigger, same missing
+piece — there is no reconciliation mechanism anywhere in this codebase
+that would notice and resolve a stuck row regardless of which side failed.
+The fix scoped out of both entries is the same fix: a startup or periodic
+reconciliation sweep.
+
+**Item 4 — Loop B's own DB session, honestly assessed**: Loop B
+(`_run_loop_b`) is NOT vulnerable to the SAME failure mode Loop A had (a
+transient DB blip crashing the entire pipeline) — it already wraps its
+entire body in one broad `except Exception:` (Decision C's own original
+design: "any exception here is caught and logged; it must never crash Loop
+A"), runs on its own isolated thread with its own fresh session, and
+already cannot propagate a failure anywhere else. So there is no
+regression against Decision E there.
+
+But it IS exposed to a DIFFERENT, real gap, worth documenting rather than
+silently assuming fixed by association: Loop B's broad
+`except Exception:` means a transient DB failure ANYWHERE in its chain
+(`evidence_service.persist_evidence_package`,
+`decision_service.persist_decision_result`,
+`verification_service.run_verification_if_warranted`,
+`incident_service.correlate_or_create_incident`) silently discards the
+ENTIRE trigger's semantic analysis — no evidence package, no decision, no
+incident — with no retry and no distinction from a genuine, permanent bug
+in that same code path. Unlike Loop A's NEW fine-grained "skip just this
+one cycle's persistence" degradation, a single momentary DB hiccup during
+Loop B costs an entire VLM/Reasoner/Verifier analysis cycle outright — a
+potentially incident-worthy result could be silently lost to a
+sub-second blip, with only a per-occurrence log line as evidence.
+
+**Stated plainly, in operational terms, not just "harden this later"**:
+this is the one gap in this entire follow-up with a DIRECT crowd-safety
+consequence, not merely a robustness nicety. Every other case documented
+here degrades to something OBSERVABLE — a skipped snapshot/heatmap cycle
+that self-heals next checkpoint, a run correctly marked FAILED, or a run
+honestly left at RUNNING with a CRITICAL log demanding attention. Loop B's
+current behavior does none of that: if the DB happens to blip during the
+ONE trigger that would have caught a genuine crowd-safety incident (a
+crush, a stampede precursor, whatever RISK/FALLBACK actually fired on),
+that incident is simply never created — no evidence package, no decision,
+no alert, nothing operator-visible beyond a log line most operators will
+never read in real time. The video finishes processing normally, the
+session reaches COMPLETED, and from the dashboard's perspective nothing
+ever happened. This is exactly the failure mode this whole system exists
+to prevent, now possible via nothing more than a momentary database
+hiccup landing at the wrong millisecond — which is precisely why this is
+recorded as a known follow-up item rather than left implicit.
+
+Loop B's `except Exception:` also shares the SAME "too broad" characteristic Item 1
+flagged and fixed for Loop A: a genuine bug in the evidence/decision/
+incident-correlation chain would be caught and logged here too, silently
+repeating on every future trigger for the rest of the video with no
+Decision-E-style FAILED signal ever surfacing.
+
+**KNOWN FOLLOW-UP ITEM, not fixed here (explicitly deferred, not
+forgotten)**: narrow Loop B's exception handling the same way Loop A's was
+narrowed (Item 1) and/or add a bounded retry around its own persistence
+calls (mirroring Item 3's terminal-write retry), so a transient DB blip
+during semantic analysis degrades gracefully (retry, or at minimum a
+loudly-logged loss distinguishable from a routine VLM/LLM-unavailable
+skip) instead of silently discarding a full trigger's evidence chain. Not
+addressed in this pass — flagged explicitly per this follow-up's own
+instruction not to let this exact class of gap go undocumented a second
+time.
+
+**Item 5 — sustained outage, not just a single blip**: the original §29
+fix's own test injected exactly ONE transient failure. Added
+`test_sustained_outage_across_multiple_consecutive_checkpoints_recovers_cleanly`
+— fails THREE CONSECUTIVE periodic-checkpoint commits (not one), then lets
+the database recover, and confirms `db.rollback()` after each failed cycle
+does not accumulate corrupted session state (no `PendingRollbackError` or
+similar) across repeated failures — the run still processes every frame
+and reaches `COMPLETED` once the outage genuinely ends.
+
+**Full suite after this follow-up**: `test_analysis_orchestrator.py` alone
+— 14 passed (the original 10 plus 4 new: the non-DB-bug regression guard,
+the sustained-outage test, and the two terminal-write-retry tests). Full
+project suite, one clean `pytest tests/ -v` run: **347 passed, 0 failed,
+977.06s (16:17)** — 343 prior + these 4 new. No git command was run at any
+point in this follow-up.

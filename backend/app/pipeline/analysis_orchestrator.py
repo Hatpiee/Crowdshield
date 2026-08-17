@@ -23,9 +23,12 @@ COMPOSITION and CONCURRENCY SAFETY, not new algorithms.
 
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
 from app.core import database
@@ -61,6 +64,34 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+# §29 follow-up (Testing Audit phase): the SPECIFIC set of exceptions that
+# genuinely indicate "the database is transiently unreachable" — NOT the
+# broader sqlalchemy.exc.DBAPIError, which also covers IntegrityError/
+# DataError/ProgrammingError (real data/logic bugs, e.g. a constraint
+# violation from a genuine defect elsewhere in this code — those must keep
+# propagating to Decision E's FAILED path, never be silently reinterpreted
+# as "transient DB issue, continuing", or a recurring real bug would repeat
+# forever, invisible, instead of ever surfacing). OperationalError covers
+# connection drops/timeouts/"server closed the connection"; InterfaceError
+# covers DBAPI-level "connection already closed"; SQLAlchemyTimeoutError
+# covers connection-pool checkout timeouts (the pool itself exhausted/DB
+# unreachable for new connections) — all three are genuinely about
+# AVAILABILITY, not data correctness.
+_TRANSIENT_DB_ERRORS = (OperationalError, InterfaceError, SQLAlchemyTimeoutError)
+
+# Bounded retry specifically for the TERMINAL status write (Item 3 of the
+# §29 follow-up): unlike mid-run periodic/per-frame persistence (which can
+# safely skip one cycle and try again next cycle — see _run_loop_a), there
+# is no "next cycle" for the FINAL commit — Loop A has already finished. A
+# transient blip exactly at that moment deserves a few short retries before
+# being treated as fatal, rather than immediately downgrading a genuinely
+# successful run to FAILED. Still bounded: a truly, durably unreachable
+# database cannot be written to no matter how long this waits — see
+# DECISIONS.md's "Implementation-Discovered Constraints" for the honest
+# residual limit this still leaves.
+_TERMINAL_COMMIT_MAX_ATTEMPTS = 3
+_TERMINAL_COMMIT_RETRY_DELAY_SECONDS = 1.0
 
 
 class VideoPreconditionError(Exception):
@@ -115,6 +146,49 @@ class AnalysisOrchestrator:
             .first()
         )
 
+    def _commit_with_retry(self, db: Session, description: str, apply_changes) -> None:
+        """Item 3 of the §29 follow-up: bounded retry for the TERMINAL
+        status write only (called from run(), never from the mid-run
+        per-cycle persistence in _run_loop_a, which already has its own
+        skip-and-continue semantics via the next cycle). Re-raises the last
+        transient error once _TERMINAL_COMMIT_MAX_ATTEMPTS is exhausted —
+        the caller (run()'s own try/except) is responsible for the
+        honest last-resort handling of a durably unreachable database.
+
+        REAL BUG CAUGHT WHILE TESTING THIS: `apply_changes` (a zero-arg
+        callable that assigns the intended terminal status onto the ORM
+        objects) is called before EVERY attempt, not just the first. A
+        failed attempt's own necessary `db.rollback()` doesn't just clear
+        the aborted transaction — it EXPIRES every object tracked by this
+        session, reverting the in-memory `.status = COMPLETED` assignment
+        made before the failed commit. A bare retried `db.commit()` alone
+        (this method's first draft) silently commits an empty transaction
+        on the next attempt — the retry "succeeds" but persists nothing,
+        leaving the row exactly as it was before. Caught by
+        test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed
+        actually failing before this fix (status stayed RUNNING, not
+        COMPLETED, after a supposedly-successful retry) — see
+        DECISIONS.md."""
+        last_exc: Exception | None = None
+        for attempt in range(1, _TERMINAL_COMMIT_MAX_ATTEMPTS + 1):
+            try:
+                apply_changes()
+                db.commit()
+                return
+            except _TRANSIENT_DB_ERRORS as exc:
+                last_exc = exc
+                db.rollback()
+                logger.error(
+                    "§29 GRACEFUL DEGRADATION: AnalysisOrchestrator %s commit "
+                    "attempt %d/%d failed for session_id=%s — %s",
+                    description, attempt, _TERMINAL_COMMIT_MAX_ATTEMPTS,
+                    self._session_id, exc,
+                )
+                if attempt < _TERMINAL_COMMIT_MAX_ATTEMPTS:
+                    time.sleep(_TERMINAL_COMMIT_RETRY_DELAY_SECONDS)
+        assert last_exc is not None
+        raise last_exc
+
     def run(self) -> None:
         """The main entry point — executed on the background thread.
         Decision E: every run reaches a terminal state, always. The
@@ -151,16 +225,26 @@ class AnalysisOrchestrator:
             for thread in loop_b_threads:
                 thread.join()
 
-            processing_run.completed_at = _now()
-            if was_cancelled:
-                processing_run.status = ProcessingRunStatus.CANCELLED
-                session.status = SessionStatus.CANCELLED
-                logger.info("AnalysisOrchestrator: session_id=%s CANCELLED", self._session_id)
-            else:
-                processing_run.status = ProcessingRunStatus.COMPLETED
-                session.status = SessionStatus.COMPLETED
-                logger.info("AnalysisOrchestrator: session_id=%s COMPLETED", self._session_id)
-            db.commit()
+            terminal_run_status = ProcessingRunStatus.CANCELLED if was_cancelled else ProcessingRunStatus.COMPLETED
+            terminal_session_status = SessionStatus.CANCELLED if was_cancelled else SessionStatus.COMPLETED
+
+            def _apply_terminal_status() -> None:
+                # Re-applied on EVERY retry attempt, not just the first —
+                # see _commit_with_retry's own docstring for why a bare
+                # retried db.commit() alone is not enough.
+                processing_run.status = terminal_run_status
+                processing_run.completed_at = processing_run.completed_at or _now()
+                session.status = terminal_session_status
+
+            # Item 3 (§29 follow-up): retried, not a single-shot commit — a
+            # transient blip exactly here must not misreport a genuinely
+            # successful/cancelled run as FAILED just because the LAST
+            # write hiccuped.
+            self._commit_with_retry(db, "terminal status write", _apply_terminal_status)
+            logger.info(
+                "AnalysisOrchestrator: session_id=%s %s",
+                self._session_id, terminal_run_status.value,
+            )
 
         except Exception as exc:
             logger.exception("AnalysisOrchestrator: session_id=%s FAILED", self._session_id)
@@ -168,18 +252,39 @@ class AnalysisOrchestrator:
                 db.rollback()
                 session = db.get(AnalysisSession, self._session_id)
                 processing_run = self._latest_processing_run(db)
-                if processing_run is not None:
-                    processing_run.status = ProcessingRunStatus.FAILED
-                    processing_run.completed_at = _now()
-                    processing_run.error_message = str(exc)
-                if session is not None:
-                    session.status = SessionStatus.FAILED
-                db.commit()
+
+                def _apply_failed_status() -> None:
+                    # Same re-apply-on-every-attempt requirement as
+                    # _apply_terminal_status above.
+                    if processing_run is not None:
+                        processing_run.status = ProcessingRunStatus.FAILED
+                        processing_run.completed_at = processing_run.completed_at or _now()
+                        processing_run.error_message = str(exc)
+                    if session is not None:
+                        session.status = SessionStatus.FAILED
+
+                self._commit_with_retry(db, "fallback FAILED-status write", _apply_failed_status)
             except Exception:
-                logger.exception(
-                    "AnalysisOrchestrator: session_id=%s failed AGAIN while "
-                    "recording its own FAILED state",
-                    self._session_id,
+                # Item 3 (§29 follow-up): both the original terminal write
+                # AND its own retried fallback write are now exhausted —
+                # this run genuinely cannot reach a terminal state from
+                # here. CRITICAL (not just logger.exception's default
+                # ERROR) because this is the one honest residual case
+                # where Decision E's "never stuck in RUNNING/PROCESSING"
+                # guarantee CANNOT be kept from inside this method alone —
+                # see DECISIONS.md's "Implementation-Discovered
+                # Constraints" entry for why this cannot be fully closed
+                # without an external reconciliation process, and why that
+                # is out of scope here.
+                logger.critical(
+                    "§29 GRACEFUL DEGRADATION EXHAUSTED: AnalysisOrchestrator "
+                    "session_id=%s could NOT record ANY terminal status "
+                    "(neither the original outcome nor a fallback FAILED) "
+                    "after %d retried attempts each — the database appears "
+                    "durably unreachable, not merely transiently. This run "
+                    "may be left stuck in RUNNING/PROCESSING and requires "
+                    "manual/operational investigation.",
+                    self._session_id, _TERMINAL_COMMIT_MAX_ATTEMPTS,
                 )
         finally:
             db.close()
@@ -252,9 +357,32 @@ class AnalysisOrchestrator:
                     )
 
                     risk_result = risk_machine.update(crowd_metrics)
-                    risk_state_service.record_transition_if_confirmed(
-                        db, session.id, prev_risk_result, risk_result
-                    )
+                    try:
+                        risk_state_service.record_transition_if_confirmed(
+                            db, session.id, prev_risk_result, risk_result
+                        )
+                    except _TRANSIENT_DB_ERRORS:
+                        # §29: "Live pipeline does not depend on DB
+                        # availability for in-flight processing." risk_result
+                        # is already computed in memory above — a transient
+                        # DB failure persisting the transition must only
+                        # cost THIS frame's persistence, never crash Loop A.
+                        # db.rollback() clears the session's failed-
+                        # transaction state so later commits can succeed
+                        # again once the DB recovers. Deliberately narrow
+                        # (NOT bare `except Exception`): a genuine data/logic
+                        # bug here (e.g. IntegrityError from a real defect)
+                        # must keep propagating to Decision E's FAILED path,
+                        # never be silently misreported as "transient DB
+                        # issue, continuing" — see DECISIONS.md.
+                        logger.error(
+                            "§29 GRACEFUL DEGRADATION: AnalysisOrchestrator "
+                            "risk-state transition persistence failed for "
+                            "session_id=%s at frame=%d — skipping this "
+                            "transition's persistence and continuing",
+                            self._session_id, frame.frame_number, exc_info=True,
+                        )
+                        db.rollback()
 
                     trigger_decision = trigger_engine.evaluate(crowd_metrics, risk_result)
                     if trigger_decision.trigger_type != TriggerType.NONE:
@@ -274,43 +402,68 @@ class AnalysisOrchestrator:
                 # cancellation-checking, progress-column updates, AND
                 # heatmap-due checking — never per-frame.
                 if frame_counter % settings.PROGRESS_UPDATE_INTERVAL_FRAMES == 0:
-                    current_status = _fresh_status(db, session.id)
-                    if current_status == SessionStatus.CANCELLED:
-                        # Decision F: stop promptly — no new frames
-                        # processed, no new Loop B threads spawned. Any
-                        # ALREADY-RUNNING Loop B thread is allowed to run
-                        # to completion (joined by run(), not here).
-                        was_cancelled = True
-                        break
+                    try:
+                        current_status = _fresh_status(db, session.id)
+                        if current_status == SessionStatus.CANCELLED:
+                            # Decision F: stop promptly — no new frames
+                            # processed, no new Loop B threads spawned. Any
+                            # ALREADY-RUNNING Loop B thread is allowed to run
+                            # to completion (joined by run(), not here).
+                            was_cancelled = True
+                            break
 
-                    processing_run.frames_processed = frame_counter
-                    processing_run.last_progress_update_at = _now()
+                        processing_run.frames_processed = frame_counter
+                        processing_run.last_progress_update_at = _now()
 
-                    # Gap 1 retrofit (Phase 21): a CrowdMetricsSnapshot row
-                    # at the SAME periodic checkpoint already used for
-                    # progress/heatmap-cadence — never per-frame. Added to
-                    # the session (not yet committed) here so it lands in
-                    # the SAME commit as the progress-column update below,
-                    # rather than an extra round trip.
-                    if crowd_metrics is not None:
-                        crowd_metrics_snapshot_service.persist_snapshot(
-                            db, session.id, crowd_metrics, risk_result
-                        )
-
-                    db.commit()
-
-                    if crowd_metrics is not None:
-                        heatmap_due = (
-                            last_heatmap_timestamp is None
-                            or (frame.timestamp_seconds - last_heatmap_timestamp)
-                            >= settings.HEATMAP_GENERATION_INTERVAL_SECONDS
-                        )
-                        if heatmap_due:
-                            heatmap_service.generate_and_persist_heatmaps(
-                                db, session.id, frame.frame_number, frame.timestamp_seconds,
-                                crowd_metrics, frame_width, frame_height,
+                        # Gap 1 retrofit (Phase 21): a CrowdMetricsSnapshot row
+                        # at the SAME periodic checkpoint already used for
+                        # progress/heatmap-cadence — never per-frame. Added to
+                        # the session (not yet committed) here so it lands in
+                        # the SAME commit as the progress-column update below,
+                        # rather than an extra round trip.
+                        if crowd_metrics is not None:
+                            crowd_metrics_snapshot_service.persist_snapshot(
+                                db, session.id, crowd_metrics, risk_result
                             )
-                            last_heatmap_timestamp = frame.timestamp_seconds
+
+                        db.commit()
+
+                        if crowd_metrics is not None:
+                            heatmap_due = (
+                                last_heatmap_timestamp is None
+                                or (frame.timestamp_seconds - last_heatmap_timestamp)
+                                >= settings.HEATMAP_GENERATION_INTERVAL_SECONDS
+                            )
+                            if heatmap_due:
+                                heatmap_service.generate_and_persist_heatmaps(
+                                    db, session.id, frame.frame_number, frame.timestamp_seconds,
+                                    crowd_metrics, frame_width, frame_height,
+                                )
+                                last_heatmap_timestamp = frame.timestamp_seconds
+                    except _TRANSIENT_DB_ERRORS:
+                        # §29: "Live pipeline does not depend on DB
+                        # availability for in-flight processing." Everything
+                        # this checkpoint would persist (progress columns,
+                        # crowd-metrics snapshot, heatmaps) is DERIVED from
+                        # in-memory state already computed above — a
+                        # transient DB failure here must only cost THIS
+                        # cycle's persistence, never the whole run.
+                        # db.rollback() clears the session's failed-
+                        # transaction state so the NEXT checkpoint can commit
+                        # normally once the DB recovers. Deliberately narrow
+                        # (NOT bare `except Exception`): a genuine data/logic
+                        # bug here must keep propagating to Decision E's
+                        # FAILED path, never be silently misreported as
+                        # "transient DB issue, continuing" — see
+                        # DECISIONS.md.
+                        logger.error(
+                            "§29 GRACEFUL DEGRADATION: AnalysisOrchestrator "
+                            "periodic persistence failed for session_id=%s "
+                            "at frame=%d — skipping this cycle's persistence "
+                            "and continuing",
+                            self._session_id, frame_counter, exc_info=True,
+                        )
+                        db.rollback()
 
                 prev_frame = frame
 

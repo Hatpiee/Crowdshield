@@ -25,17 +25,21 @@ import logging
 import threading
 import time
 import uuid
+from dataclasses import dataclass
+
+from sqlalchemy.exc import OperationalError
 
 from app.core import database
 from app.core.config import settings
 from app.models.analysis_session import AnalysisSession, SessionStatus
+from app.models.incident import Incident, IncidentLifecycleStatus
 from app.models.processing_run import ProcessingRun, ProcessingRunStatus
 from app.models.video import VideoAsset
 from app.pipeline.analysis_orchestrator import AnalysisOrchestrator
 from app.pipeline.bytetrack_adapter import ByteTrackAdapter
 from app.pipeline.crowd_grid import CrowdGrid
 from app.pipeline.crowd_metrics import CrowdMetricsEngine
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult
+from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
 from app.pipeline.dis_optical_flow import DISOpticalFlowAdapter
 from app.pipeline.evidence_builder import EvidenceBuilder
 from app.pipeline.minicpm_vlm import VLMUnavailableError
@@ -43,7 +47,8 @@ from app.pipeline.mp4_frame_source import MP4FrameSource
 from app.pipeline.risk_score import compute_risk_grid
 from app.pipeline.risk_state import RiskStateMachine
 from app.pipeline.roi_selection import select_roi
-from app.pipeline.trigger_engine import TriggerEngine
+from app.pipeline.trigger_engine import TriggerDecision, TriggerEngine, TriggerType
+from app.pipeline.verification_result import VerificationResult
 from app.pipeline.vision_observation import CompactCrowdMetricsSummary
 from app.pipeline.yolo_detector import YOLO11nDetector
 from app.services import evidence_service, session_service, video_storage
@@ -278,6 +283,293 @@ def test_run_reaches_failed_on_unexpected_exception_with_real_error_message(
     assert fresh_session.status == SessionStatus.FAILED
 
 
+def test_transient_db_commit_failure_during_loop_a_does_not_crash_run(
+    db_session, test_user, monkeypatch, make_processable_video
+):
+    """§29: "Live pipeline does not depend on DB availability for in-flight
+    processing." Simulates ONE transient DB commit failure exactly at Loop
+    A's periodic in-flight persistence checkpoint (progress/snapshot/
+    heatmap) — a single dropped connection mid-run, not a permanently dead
+    database — and confirms Loop A's own in-memory computation (detection/
+    tracking/crowd intelligence/risk/trigger, all already computed BEFORE
+    the failing commit) is unaffected: the run still processes every
+    remaining frame and reaches COMPLETED, with only that one cycle's
+    persistence skipped."""
+    monkeypatch.setattr(settings, "PROGRESS_UPDATE_INTERVAL_FRAMES", 5)
+    video = make_processable_video(num_frames=20)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    real_session_local = database.SessionLocal  # TestSessionLocal, per conftest's own redirect
+    state = {"orchestrator_db": None, "commit_count": 0}
+
+    def _patched_session_local():
+        real_db = real_session_local()
+        if state["orchestrator_db"] is None:
+            state["orchestrator_db"] = real_db
+            real_commit = real_db.commit
+
+            def _flaky_commit():
+                state["commit_count"] += 1
+                # commit #1 = RUNNING transition, #2 = pre-loop total_frames
+                # commit, #3 = the FIRST periodic in-loop checkpoint — fail
+                # exactly that one, then let every later commit succeed.
+                if state["commit_count"] == 3:
+                    raise OperationalError("synthetic transient DB failure", None, Exception("connection dropped"))
+                return real_commit()
+
+            real_db.commit = _flaky_commit
+        return real_db
+
+    monkeypatch.setattr(database, "SessionLocal", _patched_session_local)
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    orchestrator.run()
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+
+    assert state["commit_count"] > 3, (
+        "the periodic checkpoint never committed again after the injected "
+        "failure — test setup invalid, the failure was never actually hit"
+    )
+    assert run.status == ProcessingRunStatus.COMPLETED, (
+        f"a single transient DB commit failure crashed the entire run "
+        f"(status={run.status}, error_message={run.error_message!r}) — "
+        f"violates §29's 'does not depend on DB availability for in-flight "
+        f"processing' guarantee"
+    )
+    assert fresh_session.status == SessionStatus.COMPLETED
+    assert run.frames_processed == 20
+
+
+def test_non_db_bug_during_periodic_checkpoint_still_fails_the_run_not_swallowed(
+    db_session, test_user, monkeypatch, make_processable_video
+):
+    """§29 follow-up, Item 1: the periodic-checkpoint except clause is
+    deliberately narrowed to sqlalchemy.exc.OperationalError/InterfaceError/
+    TimeoutError, NOT a bare `except Exception`. A genuine data/logic bug
+    (here: a synthetic TypeError raised from inside
+    crowd_metrics_snapshot_service.persist_snapshot, standing in for a real
+    defect — e.g. a bad field mapping) must NOT be reinterpreted as "transient
+    DB issue, continuing" — it must still propagate to Decision E's FAILED
+    path with a clear error_message, exactly like
+    test_run_reaches_failed_on_unexpected_exception_with_real_error_message's
+    existing guarantee for Loop A's detector call."""
+    monkeypatch.setattr(settings, "PROGRESS_UPDATE_INTERVAL_FRAMES", 5)
+    video = make_processable_video(num_frames=20)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    from app.services import crowd_metrics_snapshot_service
+
+    def _boom(*args, **kwargs):
+        raise TypeError("synthetic real bug — not a DB error")
+
+    monkeypatch.setattr(crowd_metrics_snapshot_service, "persist_snapshot", _boom)
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    orchestrator.run()  # must NOT raise — Decision E's outermost catch-all still applies
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+
+    assert run.status == ProcessingRunStatus.FAILED, (
+        "a genuine non-DB bug must still fail the run — the narrowed except "
+        "clause must not have silently swallowed it as 'transient DB issue'"
+    )
+    assert run.error_message is not None
+    assert "synthetic real bug" in run.error_message
+    assert fresh_session.status == SessionStatus.FAILED
+
+
+def test_sustained_outage_across_multiple_consecutive_checkpoints_recovers_cleanly(
+    db_session, test_user, monkeypatch, make_processable_video
+):
+    """§29 follow-up, Item 5: the original DB-failure test only proves a
+    SINGLE isolated blip is absorbed. A real outage can span several
+    consecutive periodic checkpoints — this fails the FIRST THREE
+    CONSECUTIVE periodic-checkpoint commits (not just one), then lets the
+    DB recover, and confirms db.rollback() after each failed cycle does
+    NOT accumulate corrupted session state (e.g. a PendingRollbackError
+    from a mishandled prior failed transaction) — the run still processes
+    every frame and reaches COMPLETED once the outage ends."""
+    monkeypatch.setattr(settings, "PROGRESS_UPDATE_INTERVAL_FRAMES", 2)
+    video = make_processable_video(num_frames=20)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    real_session_local = database.SessionLocal
+    state = {"orchestrator_db": None, "commit_count": 0}
+
+    def _patched_session_local():
+        real_db = real_session_local()
+        if state["orchestrator_db"] is None:
+            state["orchestrator_db"] = real_db
+            real_commit = real_db.commit
+
+            def _flaky_commit():
+                state["commit_count"] += 1
+                # commit #1=RUNNING, #2=pre-loop total_frames, #3-#5=the
+                # FIRST THREE CONSECUTIVE periodic checkpoints — a
+                # sustained outage, not a single blip — then recovery.
+                if 3 <= state["commit_count"] <= 5:
+                    raise OperationalError(
+                        "synthetic sustained DB outage", None, Exception("connection refused")
+                    )
+                return real_commit()
+
+            real_db.commit = _flaky_commit
+        return real_db
+
+    monkeypatch.setattr(database, "SessionLocal", _patched_session_local)
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    orchestrator.run()
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+
+    assert state["commit_count"] > 5, (
+        "the outage must have ended and later checkpoints must have "
+        "resumed committing — test setup invalid otherwise"
+    )
+    assert run.status == ProcessingRunStatus.COMPLETED, (
+        f"three CONSECUTIVE transient failures must still degrade "
+        f"gracefully, not accumulate corrupted session state or crash the "
+        f"run (status={run.status}, error_message={run.error_message!r})"
+    )
+    assert fresh_session.status == SessionStatus.COMPLETED
+    assert run.frames_processed == 20
+
+
+def test_terminal_status_write_survives_one_transient_failure_and_still_reaches_completed(
+    db_session, test_user, monkeypatch, make_processable_video
+):
+    """§29 follow-up, Item 3: unlike mid-run persistence, the FINAL
+    terminal-status commit has no "next cycle" to fall back on. Fails
+    exactly the FIRST attempt of that commit (one transient blip), then
+    lets it recover, and confirms the run's own new retry
+    (_commit_with_retry) absorbs it — reaching COMPLETED, not
+    misreporting a genuinely successful run as FAILED just because the
+    LAST write hiccuped once."""
+    from app.pipeline import analysis_orchestrator as orchestrator_module
+
+    monkeypatch.setattr(orchestrator_module, "_TERMINAL_COMMIT_RETRY_DELAY_SECONDS", 0.01)
+
+    video = make_processable_video()  # 10 frames, no periodic checkpoint fires (interval=30)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    real_session_local = database.SessionLocal
+    state = {"orchestrator_db": None, "commit_count": 0}
+
+    def _patched_session_local():
+        real_db = real_session_local()
+        if state["orchestrator_db"] is None:
+            state["orchestrator_db"] = real_db
+            real_commit = real_db.commit
+
+            def _flaky_commit():
+                state["commit_count"] += 1
+                # commit #1=RUNNING, #2=pre-loop total_frames, #3=post-loop
+                # frames_processed, #4=the FIRST attempt of the terminal
+                # status write — fail exactly that attempt, succeed on the
+                # automatic retry.
+                if state["commit_count"] == 4:
+                    raise OperationalError(
+                        "synthetic transient DB failure", None, Exception("connection dropped")
+                    )
+                return real_commit()
+
+            real_db.commit = _flaky_commit
+        return real_db
+
+    monkeypatch.setattr(database, "SessionLocal", _patched_session_local)
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    orchestrator.run()
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+
+    assert state["commit_count"] == 5, "expected exactly one retried attempt on the terminal write"
+    assert run.status == ProcessingRunStatus.COMPLETED, (
+        f"a transient blip exactly at the terminal write must be absorbed "
+        f"by the retry, not misreport a successful run as FAILED "
+        f"(status={run.status}, error_message={run.error_message!r})"
+    )
+    assert fresh_session.status == SessionStatus.COMPLETED
+
+
+def test_terminal_status_write_durable_outage_logs_critical_and_leaves_run_unresolved(
+    db_session, test_user, monkeypatch, make_processable_video, caplog
+):
+    """§29 follow-up, Item 3 (worst case): the database is durably (not
+    transiently) unreachable for the ENTIRE end-of-run window — every
+    attempt of BOTH the primary terminal-status write (3 attempts) AND its
+    own fallback FAILED-status write (3 more attempts) fails. This is the
+    one honest residual case where Decision E's "never stuck in RUNNING/
+    PROCESSING" guarantee cannot be kept from inside this method alone
+    (see DECISIONS.md) — confirms it fails LOUDLY (a CRITICAL log, not a
+    swallowed debug line) rather than silently, and that run() itself still
+    never raises out to its caller even in this worst case."""
+    from app.pipeline import analysis_orchestrator as orchestrator_module
+
+    monkeypatch.setattr(orchestrator_module, "_TERMINAL_COMMIT_RETRY_DELAY_SECONDS", 0.01)
+
+    video = make_processable_video()
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    real_session_local = database.SessionLocal
+    state = {"orchestrator_db": None, "commit_count": 0}
+
+    def _patched_session_local():
+        real_db = real_session_local()
+        if state["orchestrator_db"] is None:
+            state["orchestrator_db"] = real_db
+            real_commit = real_db.commit
+
+            def _always_failing_commit():
+                state["commit_count"] += 1
+                # commits #1-#3 (RUNNING / pre-loop total_frames / post-loop
+                # frames_processed) succeed normally; commit #4 onward
+                # (every attempt of BOTH the primary terminal write's 3
+                # attempts AND the fallback FAILED-write's own 3 attempts)
+                # fails — a genuinely DURABLE outage, not a transient blip.
+                if state["commit_count"] >= 4:
+                    raise OperationalError(
+                        "synthetic durable DB outage", None, Exception("connection refused")
+                    )
+                return real_commit()
+
+            real_db.commit = _always_failing_commit
+        return real_db
+
+    monkeypatch.setattr(database, "SessionLocal", _patched_session_local)
+
+    with caplog.at_level(logging.CRITICAL):
+        orchestrator = AnalysisOrchestrator(session.id)
+        orchestrator.run()  # must NOT raise — even this worst case is caught
+
+    # commit #4,5,6 = the 3 exhausted attempts of the PRIMARY terminal
+    # write; #7,8,9 = the 3 exhausted attempts of the FALLBACK write.
+    assert state["commit_count"] == 9, "expected exactly 3+3 exhausted retry attempts"
+    assert any("GRACEFUL DEGRADATION EXHAUSTED" in record.message for record in caplog.records)
+    assert any(record.levelno == logging.CRITICAL for record in caplog.records)
+
+    # The honest residual limitation: neither COMPLETED nor FAILED could be
+    # recorded — the run is left exactly where its last SUCCESSFUL commit
+    # left it (RUNNING/PROCESSING), because a durably unreachable database
+    # genuinely cannot be written to from inside this one method call.
+    db_session.expire_all()
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+    assert run.status == ProcessingRunStatus.RUNNING
+    assert fresh_session.status == SessionStatus.PROCESSING
+
+
 def test_loop_b_second_trigger_dropped_not_queued_when_cap_reached(
     db_session, test_user, monkeypatch, caplog, make_processable_video
 ):
@@ -416,3 +708,126 @@ def test_loop_b_vlm_unavailable_is_caught_gracefully_evidence_marked_incomplete(
     assert len(packages) == 1
     assert packages[0].package.vision_observations_present is False
     assert "vision_observations" in packages[0].package.missing_evidence
+
+
+def test_active_incident_not_auto_resolved_when_video_ends(
+    db_session, test_user, make_processable_video
+):
+    """Master spec §34 gap-closing test (Testing Audit phase): Case #17
+    "Active incident at video end (not auto-resolved)." No existing test
+    ever exercised AnalysisOrchestrator._run_loop_b's own incident-
+    correlation call (analysis_orchestrator.py's `if
+    incident_service.is_decision_incident_worthy(...):
+    incident_service.correlate_or_create_incident(...)`) — every prior
+    orchestrator test's synthetic clip is deliberately too short/uniform to
+    ever cross a real confirmed escalation (see this file's own top
+    docstring), so Loop B's real code path into incident correlation was
+    never actually run.
+
+    Forces TWO real INCIDENT-outcome decisions through the REAL
+    `_run_loop_b` (same "call it directly with a real (frame, crowd_metrics,
+    risk_result) triple, fake only the LLM-backed Reasoner/Verifier"
+    technique already established by this file's other Loop B tests) with
+    trigger timestamps 10s apart (well inside
+    INCIDENT_CORRELATION_WINDOW_SECONDS=120s) — the SAME two-decision
+    pattern test_incident_correlation.py's own
+    test_second_decision_within_window_correlates_and_transitions_to_active
+    already proves takes an incident DETECTED -> ACTIVE, now proven to
+    happen through the orchestrator's own real wiring instead of a direct
+    service call. Then runs a REAL, SEPARATE, short `orchestrator.run()` on
+    the same session to genuinely reach ProcessingRun/AnalysisSession
+    COMPLETED ("the video ends") and confirms the incident is untouched —
+    still ACTIVE, never silently resolved just because processing finished.
+    """
+    video = make_processable_video()
+    frame, crowd_metrics, risk_result = _real_crowd_metrics_pair(video)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    crowd_grid = CrowdGrid.from_frame_dimensions(video.width, video.height)
+    risk_grid = compute_risk_grid(
+        crowd_metrics.core.pressure, crowd_metrics.congestion,
+        crowd_metrics.bottleneck, crowd_metrics.reverse_flow,
+    )
+    roi_bbox = select_roi(risk_grid, crowd_grid, video.width, video.height)
+    compact_metrics = CompactCrowdMetricsSummary(
+        risk_score=risk_result.risk_score, risk_state=risk_result.state,
+        max_density=float(crowd_metrics.core.density.grid.max()),
+        max_pressure=crowd_metrics.core.pressure.max_pressure,
+        pressure_units_disclaimer=crowd_metrics.core.pressure.units_disclaimer,
+        congested_cell_fraction=crowd_metrics.congestion.congested_cell_fraction,
+        reverse_flow_cell_fraction=crowd_metrics.reverse_flow.reverse_flow_cell_fraction,
+        bottleneck_signal_present=crowd_metrics.bottleneck is not None,
+        density_confidence=crowd_metrics.core.density.estimation_confidence,
+    )
+
+    class _FakeVisionModelDown:
+        def analyze(self, vision_input):
+            raise VLMUnavailableError("simulated: isolates incident correlation, not VLM behavior")
+
+    class _FakeReasonerIncident:
+        def reason(self, evidence_package):
+            return DecisionResult(
+                decision_id=uuid.uuid4(),
+                evidence_package_id=evidence_package.package_id,
+                evidence_cited=["risk_score"],
+                outcome=DecisionOutcome.INCIDENT,
+                reasoning_summary="fake reasoner: forces a real INCIDENT outcome",
+                recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
+                recommendation_rationale="fake",
+                projection_narrative=None,
+                abstention_reason=None,
+                confidence=evidence_package.confidence,
+                binding_constraint=evidence_package.binding_constraint,
+            )
+
+    @dataclass
+    class _FakePassingVerifier:
+        def verify(self, decision, evidence_package):
+            return VerificationResult(
+                verification_id=uuid.uuid4(), decision_id=decision.decision_id, passed=True,
+                confidence_consistency_ok=True, evidence_grounding_existence_ok=True,
+                llm_checks=None, issues_found=[],
+            )
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    builder = EvidenceBuilder()
+
+    for timestamp_seconds in (0.0, 10.0):
+        trigger_decision = TriggerDecision(
+            frame_number=int(timestamp_seconds * video.fps), timestamp_seconds=timestamp_seconds,
+            trigger_type=TriggerType.RISK, reason="test: forced incident-worthy trigger",
+        )
+        orchestrator._run_loop_b(
+            session.id, builder, _FakeVisionModelDown(), _FakeReasonerIncident(), _FakePassingVerifier(),
+            frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
+        )
+
+    incidents = db_session.query(Incident).filter(Incident.session_id == session.id).all()
+    assert len(incidents) == 1, "the two correlated decisions must land on ONE incident, not two"
+    assert incidents[0].lifecycle_status == IncidentLifecycleStatus.ACTIVE, (
+        "two decisions 10s apart (well within INCIDENT_CORRELATION_WINDOW_SECONDS) "
+        "through the REAL orchestrator must reach ACTIVE, exactly like "
+        "test_incident_correlation.py's own service-level equivalent"
+    )
+    incident_id = incidents[0].id
+
+    # "The video ends": a REAL, separate orchestrator.run() on the SAME
+    # session, over the short synthetic clip already documented (top of
+    # this file) as too short/uniform to ever fire a NEW real trigger —
+    # so this exercises pure Loop A completion, isolated from the
+    # incident-creation step above.
+    orchestrator.run()
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+    assert run.status == ProcessingRunStatus.COMPLETED, "video processing itself must finish"
+    assert fresh_session.status == SessionStatus.COMPLETED
+
+    db_session.expire_all()
+    fresh_incident = db_session.get(Incident, incident_id)
+    assert fresh_incident.lifecycle_status == IncidentLifecycleStatus.ACTIVE, (
+        "§19: an incident must NEVER be silently auto-resolved just because "
+        "the video/processing run reached its own terminal COMPLETED state — "
+        "resolution is exclusively an operator action"
+    )
