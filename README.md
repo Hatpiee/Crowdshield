@@ -73,28 +73,36 @@ top-level process) doesn't always terminate the child processes it spawned
 running in the background, still bound to ports 3000/8000, silently serving
 old code to anything that hits those ports.
 
-A `predev` script now runs automatically before every `npm run dev` and
-force-frees ports 3000 and 8000 first, so this shouldn't come up in normal
-use.
+Port cleanup used to run automatically before every `npm run dev` (a
+`predev` script), but this was reverted: even after fixing a real bug in
+that automatic step (the `kill-port` CLI used to exit non-zero whenever a
+port had nothing to kill — the common case — which silently aborted the
+whole `pre<script> -> script` chain before `dev` ever ran), `npm run dev`
+continued to intermittently fail to proceed into the real dev servers on
+at least one real developer machine, reproducing consistently in multiple
+separate terminal sessions there while never reproducing under direct
+testing elsewhere. The root cause on that machine was never conclusively
+identified. Since a flaky automatic step is worse than no automatic step,
+port cleanup is now a **manual, opt-in command**, run separately from
+`npm run dev` — simple and reliable beats automatic and fragile.
 
-**`npm run dev` silently does nothing, even though ports were already
-clean** — this was a real bug in `predev` itself, now fixed; you no longer
-need to work around it. The `kill-port` CLI (what `predev` originally
-called directly) exits with a non-zero status whenever a port has NOTHING
-to kill, i.e. the port is already clean — the common case. Since npm
-aborts the whole `pre<script> -> script` chain on any non-zero exit, this
-silently prevented `npm run dev` from ever starting the real dev servers
-whenever ports happened to already be clean, with no error message
-explaining why. `predev` now calls `scripts/kill-dev-ports.js`, a small
-wrapper that invokes `kill-port` programmatically per port and always
-exits `0` regardless of the result — port cleanup is best-effort, never
-allowed to block the real dev servers from starting. If you were
-previously running `npm run dev --ignore-scripts` to work around this,
-that's **no longer necessary** — plain `npm run dev` now works reliably
-whether the ports were already clean or not.
+If `npm run dev` behaves unexpectedly, or you suspect stale processes from
+a previous session, run the cleanup and the dev servers as two separate,
+independent steps:
 
-If a stale-process issue still comes up despite `predev` running (or you
-just want to clean up manually), from PowerShell:
+```
+npm run kill-ports
+npm run dev
+```
+
+`npm run kill-ports` force-frees ports 3000 and 8000
+(`scripts/kill-dev-ports.js`) and always exits `0`, so it's always safe to
+run on its own, any time, whether or not anything is actually using those
+ports. Plain `npm run dev` no longer runs anything automatically before
+it — nothing to silently interfere with it starting.
+
+If a stale-process issue still comes up (or you just want to clean up
+manually without the script), from PowerShell:
 
 ```powershell
 Get-Process python,node -ErrorAction SilentlyContinue
