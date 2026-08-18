@@ -2,7 +2,9 @@
 
 import { authFetch } from "@/lib/api";
 
-export type UploadResult = { success: true } | { success: false; message: string };
+export type UploadResult =
+  | { success: true; videoId: string }
+  | { success: false; message: string };
 
 export async function uploadVideo(formData: FormData): Promise<UploadResult> {
   const file = formData.get("file");
@@ -26,5 +28,9 @@ export async function uploadVideo(formData: FormData): Promise<UploadResult> {
     };
   }
 
-  return { success: true };
+  // Resolution 2: the new /analyze/new flow needs the created video's id to
+  // immediately chain into session creation — additive only, UploadForm's
+  // existing callers only ever read `.success`/`.message` and are
+  // unaffected by this new field.
+  return { success: true, videoId: body.data.id };
 }

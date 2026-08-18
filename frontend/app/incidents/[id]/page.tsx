@@ -1,8 +1,7 @@
 import Link from "next/link";
 
 import { auth } from "@/auth";
-import Logo from "@/components/Logo";
-import LogoutButton from "@/components/LogoutButton";
+import AppHeader from "@/components/AppHeader";
 import IncidentTimeline, { type IncidentDetailData } from "@/components/incidents/IncidentTimeline";
 import { authFetch } from "@/lib/api";
 
@@ -21,20 +20,6 @@ const STATUS_COLORS: Record<string, string> = {
   FALSE_POSITIVE: "#94A3B8",
 };
 
-function DetailHeader({ email, role }: { email?: string | null; role?: string }) {
-  return (
-    <header className="flex items-center justify-between border-b border-cs-border px-8 py-5">
-      <Logo />
-      <div className="flex items-center gap-4 font-mono text-xs tracking-[0.1em] text-cs-muted uppercase">
-        <span>
-          {email} ({role})
-        </span>
-        <LogoutButton />
-      </div>
-    </header>
-  );
-}
-
 export default async function IncidentDetailPage({
   params,
 }: {
@@ -49,7 +34,7 @@ export default async function IncidentDetailPage({
   if (!res.ok || !body.success) {
     return (
       <div className="flex min-h-full flex-1 flex-col bg-cs-bg text-cs-text">
-        <DetailHeader email={session?.user?.email} role={session?.role} />
+        <AppHeader />
         <div className="mx-auto max-w-3xl p-8">
           <p>Incident not found.</p>
         </div>
@@ -62,7 +47,7 @@ export default async function IncidentDetailPage({
 
   return (
     <div className="flex min-h-full flex-1 flex-col bg-cs-bg text-cs-text">
-      <DetailHeader email={session?.user?.email} role={session?.role} />
+      <AppHeader />
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

@@ -37,20 +37,20 @@ export default function UploadForm() {
         name="file"
         accept="video/mp4,.mp4"
         required
-        className="block text-sm"
+        className="block text-sm text-cs-text file:mr-3 file:border file:border-cs-border file:bg-cs-bg file:px-3 file:py-1.5 file:font-mono file:text-xs file:tracking-[0.1em] file:text-cs-muted file:uppercase"
       />
       <button
         type="submit"
         disabled={isPending}
-        className="w-fit rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+        className="w-fit bg-cs-amber px-3 py-2 font-mono text-xs tracking-[0.1em] text-cs-bg uppercase transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {isPending ? "Uploading…" : "Upload"}
       </button>
       {message && (
         <p
-          className={
-            message.type === "success" ? "text-sm text-green-600" : "text-sm text-red-600"
-          }
+          className={`font-mono text-xs ${
+            message.type === "success" ? "text-cs-teal" : "text-cs-amber"
+          }`}
         >
           {message.text}
         </p>

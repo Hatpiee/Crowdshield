@@ -41,7 +41,7 @@ export default function CreateSessionForm({ videos }: { videos: VideoOption[] })
         name="video_id"
         required
         defaultValue=""
-        className="block w-fit rounded border border-gray-300 px-3 py-2 text-sm"
+        className="block w-fit border border-cs-border bg-cs-bg px-3 py-2 text-sm text-cs-text"
       >
         <option value="" disabled>
           Select a video…
@@ -55,18 +55,16 @@ export default function CreateSessionForm({ videos }: { videos: VideoOption[] })
       <button
         type="submit"
         disabled={isPending || videos.length === 0}
-        className="w-fit rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+        className="w-fit bg-cs-amber px-3 py-2 font-mono text-xs tracking-[0.1em] text-cs-bg uppercase transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {isPending ? "Creating…" : "Create Session"}
       </button>
-      {videos.length === 0 && (
-        <p className="text-sm text-gray-500">Upload a video first.</p>
-      )}
+      {videos.length === 0 && <p className="text-sm text-cs-muted">Upload a video first.</p>}
       {message && (
         <p
-          className={
-            message.type === "success" ? "text-sm text-green-600" : "text-sm text-red-600"
-          }
+          className={`font-mono text-xs ${
+            message.type === "success" ? "text-cs-teal" : "text-cs-amber"
+          }`}
         >
           {message.text}
         </p>

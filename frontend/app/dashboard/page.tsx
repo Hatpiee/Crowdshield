@@ -1,6 +1,5 @@
 import { auth } from "@/auth";
-import LogoutButton from "@/components/LogoutButton";
-import Logo from "@/components/Logo";
+import AppHeader from "@/components/AppHeader";
 import LiveMonitor from "@/components/dashboard/LiveMonitor";
 import SessionPicker from "@/components/dashboard/SessionPicker";
 import { authFetch } from "@/lib/api";
@@ -10,20 +9,6 @@ interface SessionListItem {
   video_original_filename: string;
   status: string;
   created_at: string;
-}
-
-function DashboardHeader({ email, role }: { email?: string | null; role?: string }) {
-  return (
-    <header className="flex items-center justify-between border-b border-cs-border px-8 py-5">
-      <Logo />
-      <div className="flex items-center gap-4 font-mono text-xs tracking-[0.1em] text-cs-muted uppercase">
-        <span>
-          {email} ({role})
-        </span>
-        <LogoutButton />
-      </div>
-    </header>
-  );
 }
 
 export default async function DashboardPage({
@@ -42,7 +27,7 @@ export default async function DashboardPage({
 
     return (
       <div className="flex min-h-full flex-1 flex-col bg-cs-bg text-cs-text">
-        <DashboardHeader email={session?.user?.email} role={session?.role} />
+        <AppHeader active="dashboard" />
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-8">
           <h1 className="text-xl font-semibold">Select a session</h1>
           <SessionPicker sessions={sessions} />
@@ -61,7 +46,7 @@ export default async function DashboardPage({
   if (!detailRes.ok || !detailBody.success || !statusRes.ok || !statusBody.success) {
     return (
       <div className="flex min-h-full flex-1 flex-col bg-cs-bg text-cs-text">
-        <DashboardHeader email={session?.user?.email} role={session?.role} />
+        <AppHeader active="dashboard" />
         <div className="mx-auto max-w-3xl p-8">
           <p>Session not found.</p>
         </div>
@@ -71,7 +56,7 @@ export default async function DashboardPage({
 
   return (
     <div className="flex min-h-full flex-1 flex-col bg-cs-bg text-cs-text">
-      <DashboardHeader email={session?.user?.email} role={session?.role} />
+      <AppHeader active="dashboard" />
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-8">
         <h1 className="text-xl font-semibold">{detailBody.data.video_original_filename}</h1>
         <LiveMonitor

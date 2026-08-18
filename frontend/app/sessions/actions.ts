@@ -15,7 +15,11 @@ async function parseActionResponse(res: Response): Promise<ActionResult> {
   return { success: true };
 }
 
-export async function createSession(formData: FormData): Promise<ActionResult> {
+export type CreateSessionResult =
+  | { success: true; sessionId: string }
+  | { success: false; message: string };
+
+export async function createSession(formData: FormData): Promise<CreateSessionResult> {
   const videoId = formData.get("video_id");
   if (typeof videoId !== "string" || !videoId) {
     return { success: false, message: "Choose a video." };
@@ -26,7 +30,20 @@ export async function createSession(formData: FormData): Promise<ActionResult> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ video_id: videoId }),
   });
-  return parseActionResponse(res);
+
+  const body = await res.json();
+  if (!res.ok || !body.success) {
+    return {
+      success: false,
+      message: body?.error?.message ?? `Request failed (status ${res.status})`,
+    };
+  }
+
+  // Resolution 2: the new /analyze/new flow needs the created session's id
+  // to immediately chain into starting it — additive only,
+  // CreateSessionForm's existing callers only ever read
+  // `.success`/`.message` and are unaffected by this new field.
+  return { success: true, sessionId: body.data.id };
 }
 
 export async function startSession(sessionId: string): Promise<ActionResult> {

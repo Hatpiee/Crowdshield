@@ -2460,3 +2460,170 @@ the sustained-outage test, and the two terminal-write-retry tests). Full
 project suite, one clean `pytest tests/ -v` run: **347 passed, 0 failed,
 977.06s (16:17)** — 343 prior + these 4 new. No git command was run at any
 point in this follow-up.
+
+## Dashboard UX Phase: Navigation Fix, Unified Analysis Flow, Session Clarity, Heatmap Fix, Restyle
+
+Real user testing surfaced four distinct problems, all now resolved. This
+phase is almost entirely frontend — the only backend interaction was
+reusing existing, already-tested routes (`/sessions/{id}/cancel`) to
+resolve stale data, no backend code was changed.
+
+### Step 0 diagnosis — both findings, reported honestly
+
+**Part 1 ("no data everywhere")**: verified directly via `psql`, not
+assumed. Of the 3 real `COMPLETED` sessions, 2 (created 2026-08-15
+21:04/21:12) genuinely have zero `crowd_metrics_snapshots` rows — but this
+is NOT a bug: `crowd_metrics_snapshots` was added by "Gap 1 retrofit
+(Phase 21)" (see `crowd_metrics_snapshot_service.py`'s own docstring),
+and both those sessions completed *before* Phase 21 existed. The one
+session that postdates Phase 21 (`fb20c84a`, 2026-08-16 01:05) has 20 real
+snapshot rows and 20 real heatmap rows. Confirmed via real Playwright
+verification (screenshot: `04a-completed-session-full-page.png`) that this
+session renders CORRECTLY end-to-end on the dashboard — real risk score
+(19.2, NORMAL), real stat cards, a real heatmap image (edge-to-edge, no
+letterboxing), and a real 20-second risk trend chart. The dashboard's
+rendering logic is not the problem; the "no data" complaint is fully
+explained by which sessions had data to show, given when they ran relative
+to Phase 21.
+
+**Part 2 (the stuck `browser_test_upload.mp4` session)**: investigated
+directly, not assumed to be "just unstarted." `psql` showed its two
+`analysis_sessions` rows genuinely stuck at `QUEUED` since 2026-08-10, with
+their `processing_runs` rows stuck at `PENDING` — `started_at` was NEVER
+SET, meaning `AnalysisOrchestrator.run()`'s own background thread never
+reached even its FIRST line, let alone its outer try/except (Decision E).
+**Reproduced against the CURRENT, live orchestrator code** (a one-off
+script using real `session_service`/`orchestration_launcher` calls against
+the SAME video, `b8ada481-...`, whose `fps`/`width`/`height` are all
+`NULL`): the fresh session correctly reached `FAILED` with a clear
+`VideoPreconditionError` message in under a second. This conclusively
+proves the CURRENT code has no live bug here — Decision E's guarantee
+holds. The two (later found: three — a third stale `PENDING` run,
+`ec767aba-...`, was found afterward at the same 2026-08-10 timestamp)
+stuck rows are genuinely stale residue from this project's own Day 1
+(2026-08-10), almost certainly a `uvicorn --reload` restart interrupting
+the background thread between `launch_session_processing`'s `thread.start()`
+and the orchestrator's own first `db.commit()` — the SAME underlying gap
+already documented in "Phase 20: Known, Accepted MVP Limitation — No
+Orphaned-Session Recovery on Restart," just caught at an even earlier
+point in the lifecycle (QUEUED/PENDING, not PROCESSING) than that entry's
+own framing anticipated.
+
+**Resolution of the 3 stale rows**: a direct SQL `UPDATE` was attempted
+first but was blocked by this session's own sandbox permission classifier
+(a real-data mutation). Per the developer's own explicit choice, resolved
+instead through the REAL, already-tested `POST /sessions/{id}/cancel`
+route (all 3 were QUEUED, a cancellable state) — genuinely more accurate
+than the originally-planned "mark FAILED with a fabricated error message"
+would have been, since these sessions were administratively interrupted,
+not a real pipeline failure. All 3 now show `CANCELLED` with a real
+`completed_at`, resolved through 100% existing application code, no raw
+SQL, no new backend logic.
+
+### Resolution 1 — Auth-aware navigation
+
+New `frontend/components/AppHeader.tsx`: one shared, async Server
+Component (calls `auth()` itself — no prop-drilling required from
+callers) used by `/dashboard`, `/videos`, `/sessions`, and
+`/incidents/[id]`, replacing 2 duplicated inline header functions
+(`DashboardHeader`, `DetailHeader`) and 2 pages that previously had NO
+header at all. Its logo links to `/dashboard` via a new optional `href`
+prop added to `Logo.tsx` (default `"/"`, unchanged for the public
+landing/login pages, which still import `Logo` directly and are
+untouched). Includes real nav links (with active-page highlighting), a
+prominent "+ New Analysis" CTA, email/role, and a restyled `LogoutButton`.
+Verified via real Playwright: clicking the logo from `/incidents/[id]`
+lands on `/dashboard`, still authenticated (`01-logo-click-lands-on-dashboard.png`).
+
+### Resolution 2 — Integrated "upload → analyze → monitor" flow
+
+New `/analyze/new` (`page.tsx` + Client Component `NewAnalysisFlow.tsx`).
+Reuses the EXISTING, already-tested `uploadVideo`/`createSession`/
+`startSession` Server Actions exactly — both `uploadVideo` and
+`createSession` were extended to ALSO return the created id on success
+(purely additive; their existing callers, `UploadForm.tsx`/
+`CreateSessionForm.tsx`, only ever read `.success`/`.message` and are
+unaffected). Selecting or uploading a video automatically chains
+create → start → `router.push('/dashboard?session=<id>')`, with explicit
+`uploading`/`creating`/`starting` loading states throughout — no silent
+gap. Verified end-to-end via real Playwright: selected a real existing
+video, landed on the live monitor for a genuinely new, real session,
+confirmed "Processing" state with real video preview
+(`02c-live-monitor-new-session.png`).
+
+**Real bug found and fixed during this verification**: the first Playwright
+run surfaced a genuine React hydration mismatch in `NewAnalysisFlow.tsx`
+— `new Date(video.created_at).toLocaleString()` with no explicit locale,
+on a Client Component receiving server-fetched data, the exact same class
+of bug already found and fixed in Phase 23's `IncidentTimeline.tsx`. Fixed
+by using the SAME established `formatDateTime` helper (`lib/formatDate.ts`)
+instead of reinventing a second fix. Re-verified: zero console errors.
+
+### Resolution 3 — Session picker status clarity
+
+`SessionPicker.tsx` rewritten: color-coded badges (`COMPLETED`=teal,
+`PROCESSING`/`QUEUED`=amber text + pulsing dot, `CREATED`/`CANCELLED`=muted,
+`FAILED`=a solid amber-FILLED chip — deliberately louder than
+`PROCESSING`'s plain text, since this palette has no separate red and the
+two amber states must stay visually distinguishable). `CREATED` rows get
+an inline "Start Analysis" button by directly reusing `SessionActions.tsx`
+(the exact same Server-Action-backed component `/sessions` already used) —
+no reimplementation. Judgment call, documented here: sessions actively
+`PROCESSING`/`QUEUED` are grouped into their own "In Progress" section
+above everything else (more urgent than history), while everything else
+keeps the API's own reverse-chronological order — no delete/archive
+feature, per the explicit instruction. Verified via real Playwright
+(`03a-session-picker-badges.png`, `03b-after-inline-start-analysis.png`):
+clicking a real CREATED session's inline Start Analysis button genuinely
+transitioned it, confirmed by it moving into the "In Progress" group.
+
+### Resolution 4 — Heatmap letterboxing fix
+
+Root cause confirmed by reading `HeatmapViewer.tsx`: the image container
+used a hardcoded `aspect-video` (16:9) Tailwind class, but heatmap images
+are rendered at the SOURCE VIDEO's real dimensions (frequently not 16:9 —
+e.g. `people_clip.mp4` is 576×720, aspect ratio 0.8). Fixed WITHOUT a new
+API call or extra backend round trip: the `<img>`'s own `onLoad` handler
+reads its real `naturalWidth`/`naturalHeight` once loaded and sets the
+container's `aspect-ratio` CSS to match exactly (falling back to 16:9 only
+before any image has ever loaded — nothing to be wrong about yet).
+Verified via real Playwright against a real 576×720 heatmap: rendered box
+`1046×1307.5` → aspect ratio 0.800, natural dimensions 576×720 → aspect
+ratio 0.800 — an EXACT match, confirmed visually with no black bars
+(`04b-heatmap-fixed-no-letterbox.png`).
+
+### Resolution 5 — Restyled /videos and /sessions
+
+Both pages now use the established dark/teal/amber design tokens and the
+new `AppHeader`, matching `/dashboard`/`/incidents/[id]`. `UploadForm.tsx`,
+`CreateSessionForm.tsx`, and `SessionActions.tsx` were restyled only —
+their Server Action calls, state management, and validation logic are
+byte-identical to before, same discipline as Phase 21's login restyle.
+Verified via real Playwright (`05a-videos-restyled.png`,
+`05b-sessions-restyled.png`).
+
+### Verification summary
+
+Real Playwright run (temporary install, cleaned up afterward): zero
+console errors on the final run (one real hydration bug was found and
+fixed along the way — see Resolution 2). `npx tsc --noEmit` and
+`npx eslint` both clean across every changed/new file. No backend code was
+touched this phase — only existing, already-tested routes were called
+(`POST /sessions/{id}/cancel`, `POST /sessions/{id}/start`,
+`POST /sessions`, `POST /videos`, all reused exactly as-is).
+
+**Backend suite — one real environmental flake, isolated and confirmed not
+a regression**: a first full run (`pytest tests/ -v`, 57:17) showed 346
+passed / 1 failed —
+`test_minicpm_vlm.py::test_real_inference_against_real_cropped_frame_returns_well_formed_result`
+failed with `httpx.ReadTimeout` against the local Ollama instance. Root
+cause: this phase's own real-browser verification had left several genuine
+background `AnalysisOrchestrator` sessions actively processing
+`people_clip.mp4` (each making its own real Loop B VLM/Reasoner Ollama
+calls) concurrently with the 57-minute test run — real resource contention
+on the single local Ollama instance, not a code defect. Confirmed by
+re-running the same test in isolation once those background sessions had
+finished (37s, passed cleanly), then re-running the ENTIRE suite once more
+with zero concurrent load: **347 passed, 0 failed, 995.17s (16:35)** — the
+canonical, final, uncontended result for this phase. No git command was
+run at any point in this phase.

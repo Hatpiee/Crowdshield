@@ -39,6 +39,18 @@ export default function HeatmapViewer({
 }) {
   const [selectedType, setSelectedType] = useState<HeatmapType>(DEFAULT_TYPE);
   const [heatmaps, setHeatmaps] = useState<HeatmapSnapshotItem[]>([]);
+  // Resolution 4 (heatmap black-bar/letterboxing fix): the container
+  // previously used a hardcoded `aspect-video` (16:9) Tailwind class —
+  // heatmap images are actually rendered at the SOURCE VIDEO's real
+  // width/height (Phase 5/12), which is frequently NOT 16:9, so
+  // `object-contain` inside a wrongly-shaped box produced large black
+  // bars. Rather than plumbing width/height through via a new API call,
+  // this reads the REAL rendered image's own natural dimensions once it
+  // loads and sizes the container to match exactly — always correct,
+  // whatever the source video's actual aspect ratio turns out to be, with
+  // no extra backend round trip. Falls back to 16:9 only before any image
+  // has ever loaded (nothing to be wrong about yet).
+  const [naturalAspect, setNaturalAspect] = useState<number | null>(null);
   // Keyed by heatmap id (not two separate useState calls) specifically so
   // this effect never needs to synchronously reset state when `current`
   // changes — every setState call below happens inside an async
@@ -153,7 +165,14 @@ export default function HeatmapViewer({
         <img
           src={imageSrc}
           alt={`${selectedType} heatmap at t=${current.timestamp_seconds.toFixed(2)}s`}
-          className="aspect-video w-full border border-cs-border bg-black object-contain"
+          className="w-full border border-cs-border bg-black object-contain"
+          style={{ aspectRatio: naturalAspect ?? 16 / 9 }}
+          onLoad={(event) => {
+            const img = event.currentTarget;
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              setNaturalAspect(img.naturalWidth / img.naturalHeight);
+            }
+          }}
         />
       )}
     </div>

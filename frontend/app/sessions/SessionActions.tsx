@@ -53,21 +53,21 @@ export default function SessionActions({
         <button
           onClick={handleStart}
           disabled={isPending}
-          className="rounded bg-black px-2 py-1 text-xs text-white disabled:opacity-50"
+          className="bg-cs-amber px-2 py-1 font-mono text-[10px] tracking-[0.1em] text-cs-bg uppercase transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {isPending ? "…" : "Start"}
+          {isPending ? "…" : "Start Analysis"}
         </button>
       )}
       {canCancel && (
         <button
           onClick={handleCancel}
           disabled={isPending}
-          className="rounded border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
+          className="border border-cs-border px-2 py-1 font-mono text-[10px] tracking-[0.1em] text-cs-muted uppercase transition-colors hover:border-cs-amber hover:text-cs-amber disabled:opacity-50"
         >
           {isPending ? "…" : "Cancel"}
         </button>
       )}
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      {error && <span className="font-mono text-[10px] text-cs-amber">{error}</span>}
     </div>
   );
 }
