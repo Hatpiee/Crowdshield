@@ -1,0 +1,32 @@
+LLM_MODEL='qwen3:8b' OLLAMA_BASE_URL='http://localhost:11434'
+LLM_REQUEST_TIMEOUT_SECONDS=135.0 LLM_TEMPERATURE=0.15
+n_per_case=3
+
+=== A_old_schema_compact ===
+  call 1/3: wall=78.68s total_duration=76.61s load=8.82s prompt_eval_count=1266 prompt_eval_duration=40.51s eval_count=85 eval_duration=27.23s schema_chars=1465 response_chars=335 validation_ok=True event_classification_present=None
+  call 2/3: wall=28.36s total_duration=28.36s load=0.34s prompt_eval_count=1266 prompt_eval_duration=0.33s eval_count=92 eval_duration=27.67s schema_chars=1465 response_chars=376 validation_ok=True event_classification_present=None
+  call 3/3: wall=27.58s total_duration=27.58s load=0.31s prompt_eval_count=1266 prompt_eval_duration=0.32s eval_count=87 eval_duration=26.92s schema_chars=1465 response_chars=348 validation_ok=True event_classification_present=None
+
+=== B_new_schema_compact ===
+  call 1/3: wall=30.90s total_duration=30.90s load=0.33s prompt_eval_count=1266 prompt_eval_duration=0.29s eval_count=101 eval_duration=30.25s schema_chars=4036 response_chars=409 validation_ok=True event_classification_present=False
+  call 2/3: wall=33.59s total_duration=33.59s load=0.37s prompt_eval_count=1266 prompt_eval_duration=0.30s eval_count=106 eval_duration=32.88s schema_chars=4036 response_chars=437 validation_ok=True event_classification_present=False
+  call 3/3: wall=30.80s total_duration=30.79s load=0.31s prompt_eval_count=1266 prompt_eval_duration=0.29s eval_count=99 eval_duration=30.16s schema_chars=4036 response_chars=396 validation_ok=True event_classification_present=False
+
+=== C_new_schema_watch ===
+  call 1/3: wall=67.24s total_duration=67.24s load=0.35s prompt_eval_count=1276 prompt_eval_duration=8.48s eval_count=163 eval_duration=58.38s schema_chars=4036 response_chars=725 validation_ok=True event_classification_present=True
+  call 2/3: wall=60.77s total_duration=60.77s load=0.45s prompt_eval_count=1276 prompt_eval_duration=0.38s eval_count=169 eval_duration=59.90s schema_chars=4036 response_chars=744 validation_ok=True event_classification_present=True
+  call 3/3: wall=67.87s total_duration=67.87s load=0.37s prompt_eval_count=1276 prompt_eval_duration=0.33s eval_count=169 eval_duration=67.14s schema_chars=4036 response_chars=744 validation_ok=True event_classification_present=True
+
+=== D_new_schema_incident_crisis ===
+  call 1/3: EXCEPTION ReadTimeout: timed out
+  call 2/3: EXCEPTION ReadTimeout: timed out
+  call 3/3: EXCEPTION ReadTimeout: timed out
+
+=== Summary (steady-state, all calls treated equally — no warm/cold split; see notes below) ===
+  A_old_schema_compact: n=3 wall min=27.58s max=78.68s mean=44.87s | eval_count min=85 max=92 mean=88.0
+  B_new_schema_compact: n=3 wall min=30.80s max=33.59s mean=31.76s | eval_count min=99 max=106 mean=102.0
+  C_new_schema_watch: n=3 wall min=60.77s max=67.87s mean=65.29s | eval_count min=163 max=169 mean=167.0
+  D_new_schema_incident_crisis: NO SUCCESSFUL CALLS
+
+First call per case includes Ollama model-load time if the model was evicted between scripts;
+compare total_duration vs load_duration per-call above to distinguish cold-load from real generation cost.

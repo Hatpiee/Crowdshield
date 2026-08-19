@@ -1,0 +1,148 @@
+{
+  "run_metadata": {
+    "run_id": "20260819T180554Z_46cbfa35",
+    "sample_id": null,
+    "timestamp_utc": "2026-08-19T18:05:54.077236+00:00",
+    "source_filename": "779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "source_path": "..\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "source_sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "video_duration_seconds": 20.1,
+    "video_fps": 30.0,
+    "video_width": 576,
+    "video_height": 720,
+    "video_frame_count": 603,
+    "selected_window": {
+      "start_time": null,
+      "end_time": null,
+      "max_duration": null
+    },
+    "sample_interval": 1,
+    "save_crops": true,
+    "run_mode": "full-chain",
+    "active_models": {
+      "detector": "YOLO11nDetector",
+      "tracker": "ByteTrackAdapter",
+      "optical_flow": "DISOpticalFlowAdapter",
+      "vision_model": "MiniCPMVisionModel (only if this run is --full-chain)",
+      "reasoner": "Reasoner/Qwen3-8B (only if this run is --full-chain)",
+      "verifier": "Verifier/Qwen3-8B think=True (only if outcome=INCIDENT in --full-chain)"
+    },
+    "acute_hazard_config": {
+      "ACUTE_HAZARD_ZSCORE_THRESHOLD": 3.0,
+      "ACUTE_HAZARD_MIN_CORROBORATING_SIGNALS": 2,
+      "ACUTE_HAZARD_MIN_BASELINE_OBSERVATIONS": 30,
+      "ACUTE_HAZARD_BASELINE_EMA_ALPHA": 0.1,
+      "ACUTE_HAZARD_COOLDOWN_SECONDS": 5.0,
+      "signal_order": [
+        "motion_energy",
+        "flow_divergence",
+        "detection_count_delta",
+        "scene_change"
+      ]
+    }
+  },
+  "acute_hazard_trigger_count": 2,
+  "semantic_analyses_run": 2,
+  "outcome_counts": {
+    "INCIDENT": 0,
+    "WATCH": 0,
+    "ABSTAIN": 2,
+    "NO_INCIDENT": 0
+  },
+  "events": [
+    {
+      "event_index": 1,
+      "frame_number": 60,
+      "timestamp_seconds": 2.0,
+      "trigger_reason": "acute hazard signals corroborated: flow_divergence, detection_count_delta",
+      "corroborating_signals": [
+        "flow_divergence",
+        "detection_count_delta"
+      ],
+      "z_scores": {
+        "scene_change": 2.7215347813743387,
+        "motion_energy": 0.9217374490631494,
+        "flow_divergence": 7.564577269229688,
+        "detection_count_delta": 4.821158915995747
+      },
+      "raw_values": {},
+      "spatial_active_cell_fraction": null,
+      "spatial_largest_component_fraction": null,
+      "roi_bbox": [
+        493.7142857142858,
+        160.0,
+        576.0,
+        280.0
+      ],
+      "heatmap_types_available": [
+        "DENSITY",
+        "PRESSURE",
+        "FLOW_CONGESTION",
+        "RISK",
+        "PREDICTIVE"
+      ],
+      "before_frame_available": true,
+      "after_frame_available": true,
+      "vlm_call_succeeded": true,
+      "vision_observation_categories": [
+        "VISIBLE_OBSTRUCTION"
+      ],
+      "evidence_complete": true,
+      "evidence_missing": [],
+      "contradiction_types": [],
+      "decision_outcome": "ABSTAIN",
+      "abstention_reason": "confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400",
+      "event_classification": null,
+      "incident_created": false,
+      "diagnosis_stage": "CONFIDENCE_FLOOR",
+      "diagnosis_explanation": "Deterministic abstention (no LLM outcome was reached): confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400"
+    },
+    {
+      "event_index": 2,
+      "frame_number": 413,
+      "timestamp_seconds": 13.766666666666667,
+      "trigger_reason": "acute hazard signals corroborated: motion_energy, flow_divergence",
+      "corroborating_signals": [
+        "motion_energy",
+        "flow_divergence"
+      ],
+      "z_scores": {
+        "scene_change": 1.8046014037929667,
+        "motion_energy": 13.581945662271705,
+        "flow_divergence": 7.350893221617347,
+        "detection_count_delta": 0.24458241393262514
+      },
+      "raw_values": {},
+      "spatial_active_cell_fraction": null,
+      "spatial_largest_component_fraction": null,
+      "roi_bbox": [
+        0.0,
+        400.0,
+        82.28571428571429,
+        520.0
+      ],
+      "heatmap_types_available": [
+        "DENSITY",
+        "PRESSURE",
+        "FLOW_CONGESTION",
+        "RISK",
+        "PREDICTIVE"
+      ],
+      "before_frame_available": true,
+      "after_frame_available": true,
+      "vlm_call_succeeded": true,
+      "vision_observation_categories": [
+        "VISIBLE_OBSTRUCTION"
+      ],
+      "evidence_complete": true,
+      "evidence_missing": [],
+      "contradiction_types": [],
+      "decision_outcome": "ABSTAIN",
+      "abstention_reason": "ACUTE_HAZARD trigger fired but VLM evidence does not corroborate with an acute-hazard-consistent observation category (found: ['VISIBLE_OBSTRUCTION']; routine crowd-management categories alone are insufficient grounds for an acute-hazard-sourced incident)",
+      "event_classification": null,
+      "incident_created": false,
+      "diagnosis_stage": "EVIDENCE_CONSISTENCY_GATE",
+      "diagnosis_explanation": "Deterministic abstention (no LLM outcome was reached): ACUTE_HAZARD trigger fired but VLM evidence does not corroborate with an acute-hazard-consistent observation category (found: ['VISIBLE_OBSTRUCTION']; routine crowd-management categories alone are insufficient grounds for an acute-hazard-sourced incident)"
+    }
+  ]
+}

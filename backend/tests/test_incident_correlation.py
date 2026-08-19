@@ -4,12 +4,24 @@ import uuid
 
 from app.core.config import settings
 from app.models.incident import Incident, IncidentEvidence, IncidentLifecycleStatus
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    RecommendationType,
+)
 from app.pipeline.evidence_builder import EvidenceBuilder
 from app.pipeline.trigger_engine import TriggerDecision, TriggerType
 from app.services import decision_service, evidence_service, incident_service, session_service
 
-from tests.test_evidence_builder import _crowd_metrics, _frame, _observation, _risk_state_result, _vision_result
+from tests.test_evidence_builder import (
+    _crowd_metrics,
+    _frame,
+    _observation,
+    _risk_state_result,
+    _structured_report,
+    _vision_result,
+)
 
 
 def _persist_pair(db_session, session, timestamp_seconds: float, outcome=DecisionOutcome.INCIDENT):
@@ -34,6 +46,8 @@ def _persist_pair(db_session, session, timestamp_seconds: float, outcome=Decisio
             evidence_cited=["risk_score"], outcome=outcome,
             reasoning_summary="test", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
             recommendation_rationale="test", projection_narrative=None,
+            event_classification=EventClassification.CROWD_CRUSH,
+            structured_report=_structured_report() if outcome == DecisionOutcome.INCIDENT else None,
             abstention_reason=None, confidence=evidence_result.confidence,
             binding_constraint=evidence_result.binding_constraint,
         )

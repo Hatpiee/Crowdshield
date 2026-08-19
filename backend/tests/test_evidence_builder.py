@@ -16,6 +16,7 @@ from app.pipeline.core_crowd_metrics import CoreCrowdMetrics
 from app.pipeline.crowd_metrics import CrowdMetrics
 from app.pipeline.crowd_pressure import CrowdPressureField
 from app.pipeline.density import DensityField
+from app.pipeline.decision_result import EventClassification, EventReportSections
 from app.pipeline.evidence_builder import EvidenceBuilder
 from app.pipeline.frame import Frame
 from app.pipeline.reverse_flow import ReverseFlowField
@@ -112,6 +113,21 @@ def _trigger_decision() -> TriggerDecision:
     return TriggerDecision(
         frame_number=0, timestamp_seconds=0.0, trigger_type=TriggerType.RISK,
         reason="test trigger",
+    )
+
+
+def _structured_report() -> EventReportSections:
+    """Acute-Hazard Trigger Phase: a minimal, valid EventReportSections —
+    shared by every test file that constructs a DecisionResult with
+    outcome=INCIDENT directly (required by DecisionResult's own validator).
+    """
+    return EventReportSections(
+        event_summary="test event summary",
+        observed_evidence=["test observed evidence item"],
+        behavioral_analysis="test behavioral analysis",
+        spatial_analysis="test spatial analysis",
+        temporal_analysis="test temporal analysis",
+        crowd_risk_context="test crowd risk context",
     )
 
 

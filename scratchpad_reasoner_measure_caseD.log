@@ -1,0 +1,13 @@
+LLM_MODEL='qwen3:8b' OLLAMA_BASE_URL='http://localhost:11434'
+LLM_REQUEST_TIMEOUT_SECONDS (configured)=135.0 (diagnostic client timeout used this run=400.0) LLM_TEMPERATURE=0.15
+n_per_case=2 case_filter='D_new_schema_incident_crisis'
+
+=== D_new_schema_incident_crisis ===
+  call 1/2: wall=169.26s total_duration=167.20s load=0.34s prompt_eval_count=1398 prompt_eval_duration=8.43s eval_count=362 eval_duration=158.37s schema_chars=4036 response_chars=1546 validation_ok=True event_classification_present=True
+  call 2/2: wall=159.54s total_duration=159.54s load=0.52s prompt_eval_count=1398 prompt_eval_duration=0.44s eval_count=361 eval_duration=158.53s schema_chars=4036 response_chars=1545 validation_ok=True event_classification_present=True
+
+=== Summary (steady-state, all calls treated equally — no warm/cold split; see notes below) ===
+  D_new_schema_incident_crisis: n=2 wall min=159.54s max=169.26s mean=164.40s | eval_count min=361 max=362 mean=361.5
+
+First call per case includes Ollama model-load time if the model was evicted between scripts;
+compare total_duration vs load_duration per-call above to distinguish cold-load from real generation cost.

@@ -64,6 +64,8 @@ def _to_read(entry: EvidencePackageWithItems) -> EvidencePackageRead:
         risk_state_snapshot=package.risk_state_snapshot,
         vision_observations_present=package.vision_observations_present,
         predictive_projection_snapshot=package.predictive_projection_snapshot,
+        acute_hazard_signal_snapshot=package.acute_hazard_signal_snapshot,
+        event_window=package.event_window,
         confidence=package.confidence,
         binding_constraint=package.binding_constraint,
         complete=package.complete,

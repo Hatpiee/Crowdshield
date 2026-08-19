@@ -1,0 +1,10 @@
+{
+  "decision_id": "68734850-4bc0-4087-80e4-dfeb6aea075c",
+  "outcome": "ABSTAIN",
+  "reasoning_summary": "Abstained without LLM invocation: ACUTE_HAZARD trigger fired but VLM evidence does not corroborate with an acute-hazard-consistent observation category (found: ['VISIBLE_OBSTRUCTION']; routine crowd-management categories alone are insufficient grounds for an acute-hazard-sourced incident)",
+  "recommendation": null,
+  "event_classification": null,
+  "structured_report": null,
+  "abstention_reason": "ACUTE_HAZARD trigger fired but VLM evidence does not corroborate with an acute-hazard-consistent observation category (found: ['VISIBLE_OBSTRUCTION']; routine crowd-management categories alone are insufficient grounds for an acute-hazard-sourced incident)",
+  "confidence": 0.9
+}

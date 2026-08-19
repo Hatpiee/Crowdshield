@@ -31,6 +31,12 @@ def persist_decision_result(db: Session, result: DecisionResult) -> DecisionResu
         recommendation=result.recommendation,
         recommendation_rationale=result.recommendation_rationale,
         projection_narrative=result.projection_narrative,
+        event_classification=result.event_classification,
+        structured_report=(
+            result.structured_report.model_dump(mode="json")
+            if result.structured_report is not None
+            else None
+        ),
         abstention_reason=result.abstention_reason,
         confidence=result.confidence,
         binding_constraint=result.binding_constraint,

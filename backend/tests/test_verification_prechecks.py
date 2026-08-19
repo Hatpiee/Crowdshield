@@ -3,7 +3,13 @@ on both passing and failing synthetic inputs."""
 
 import uuid
 
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    EventReportSections,
+    RecommendationType,
+)
 from app.pipeline.evidence_package import EvidencePackageResult, RiskStateSnapshot
 from app.pipeline.risk_state import RiskState
 from app.pipeline.trigger_engine import TriggerType
@@ -65,6 +71,15 @@ def _decision(evidence_cited: list[str], confidence: float = 0.8) -> DecisionRes
         evidence_cited=evidence_cited, outcome=DecisionOutcome.INCIDENT,
         reasoning_summary="test", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
         recommendation_rationale="test", projection_narrative=None,
+        event_classification=EventClassification.CROWD_CRUSH,
+        structured_report=EventReportSections(
+            event_summary="test event summary",
+            observed_evidence=["test observed evidence item"],
+            behavioral_analysis="test behavioral analysis",
+            spatial_analysis="test spatial analysis",
+            temporal_analysis="test temporal analysis",
+            crowd_risk_context="test crowd risk context",
+        ),
         abstention_reason=None, confidence=confidence, binding_constraint="density_estimation_confidence",
     )
 

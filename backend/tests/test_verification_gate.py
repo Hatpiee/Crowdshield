@@ -2,8 +2,23 @@
 
 import uuid
 
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    EventReportSections,
+    RecommendationType,
+)
 from app.pipeline.verification_gate import should_verify
+
+_STRUCTURED_REPORT = EventReportSections(
+    event_summary="test event summary",
+    observed_evidence=["test observed evidence item"],
+    behavioral_analysis="test behavioral analysis",
+    spatial_analysis="test spatial analysis",
+    temporal_analysis="test temporal analysis",
+    crowd_risk_context="test crowd risk context",
+)
 
 
 def _decision(outcome: DecisionOutcome) -> DecisionResult:
@@ -13,6 +28,8 @@ def _decision(outcome: DecisionOutcome) -> DecisionResult:
             evidence_cited=["risk_score"], outcome=outcome,
             reasoning_summary="test", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
             recommendation_rationale="test", projection_narrative=None,
+            event_classification=EventClassification.CROWD_CRUSH,
+            structured_report=_STRUCTURED_REPORT if outcome == DecisionOutcome.INCIDENT else None,
             abstention_reason=None, confidence=0.8, binding_constraint="density_estimation_confidence",
         )
     if outcome == DecisionOutcome.ABSTAIN:

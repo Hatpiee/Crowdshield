@@ -67,6 +67,72 @@ class DecisionOutcome(str, enum.Enum):
     ABSTAIN = "ABSTAIN"
 
 
+class EventClassification(str, enum.Enum):
+    """Acute-Hazard Trigger Phase (decision 4, "expand semantic event
+    classification") — applies to EVERY INCIDENT/WATCH decision, regardless
+    of which trigger produced it (developer's explicit choice: a RISK-
+    triggered crowd-crush incident is correctly tagged CROWD_CRUSH too, not
+    left blank). The model MAY abstain into UNKNOWN when evidence is
+    genuinely insufficient to classify — never forced to guess a specific
+    category."""
+
+    CROWD_CRUSH = "CROWD_CRUSH"
+    STAMPEDE_LIKE_DISPERSAL = "STAMPEDE_LIKE_DISPERSAL"
+    EXPLOSIVE_EVENT = "EXPLOSIVE_EVENT"
+    FIRE_OR_SMOKE = "FIRE_OR_SMOKE"
+    VEHICLE_INCIDENT = "VEHICLE_INCIDENT"
+    STRUCTURAL_HAZARD = "STRUCTURAL_HAZARD"
+    OBSTRUCTION_OR_BARRIER = "OBSTRUCTION_OR_BARRIER"
+    OTHER_ACUTE_HAZARD = "OTHER_ACUTE_HAZARD"
+    UNKNOWN = "UNKNOWN"
+
+
+# Reasoner Stability phase — TIGHTENED from an original 800
+# (real-measured root cause: real Qwen3-8B think=False generation on this
+# CPU-served Ollama instance runs at only ~2.5-3.3 tokens/sec once past a
+# handful of sentences — see scripts/measure_reasoner_latency.py's real
+# n=3 measurements and DECISIONS.md. An 800-char budget PER FIELD across 5
+# free-text fields (~1000 tokens alone, before evidence_cited/
+# reasoning_summary/recommendation_rationale) was structurally incapable
+# of finishing inside any reasonable timeout — all 3 real diagnostic
+# INCIDENT-case calls at the old budget exceeded even a 135s timeout and
+# never completed at all. 320 chars/field (~80 tokens) keeps each section
+# genuinely informative (2-4 sentences) while keeping total generation
+# bounded — the report stays SIX real, distinct sections; only per-field
+# VERBOSITY was cut, not content areas.
+_EVENT_REPORT_SECTION_MAX_LENGTH = 320
+_OBSERVED_EVIDENCE_MAX_ITEMS = 6
+_OBSERVED_EVIDENCE_ITEM_MAX_LENGTH = 160
+
+
+class EventReportSections(BaseModel):
+    """Acute-Hazard Trigger Phase — the structured incident report the
+    request asks for, as a genuinely nested/queryable object rather than
+    prose folded into `reasoning_summary` (developer's explicit choice).
+    Nested Ollama-constrained schemas are an already-proven pattern in this
+    codebase (`_ObservationListSchema` -> `_ObservationDraft` ->
+    `NormalizedBoundingBox`). Required only when `outcome == INCIDENT` (see
+    DecisionResult's own validator below) — WATCH keeps the simpler
+    existing `reasoning_summary` only."""
+
+    event_summary: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
+    observed_evidence: list[str] = Field(
+        min_length=1,
+        max_length=_OBSERVED_EVIDENCE_MAX_ITEMS,
+        description=(
+            "Explicit, itemized observations actually supported by the "
+            "evidence provided — never invented. Each item must be SHORT "
+            f"(<= {_OBSERVED_EVIDENCE_ITEM_MAX_LENGTH} chars) and concrete "
+            "(e.g. 'abrupt scene-wide motion change', 'sudden smoke/dust "
+            "plume') — a phrase, not a sentence."
+        ),
+    )
+    behavioral_analysis: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
+    spatial_analysis: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
+    temporal_analysis: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
+    crowd_risk_context: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
+
+
 class RecommendationType(str, enum.Enum):
     # Sourced directly from the TechNova problem statement's own explicit
     # "Intelligent Recommendations" list — not invented (decision #1).
@@ -104,6 +170,12 @@ class _LLMDecisionDraft(BaseModel):
     projection_narrative: Optional[str] = Field(
         default=None, max_length=_PROJECTION_NARRATIVE_MAX_LENGTH
     )
+    # Acute-Hazard Trigger Phase (decision 4/6): required whenever outcome
+    # is INCIDENT or WATCH (same nullability shape as `recommendation`
+    # above), null otherwise — see the business-rule validator below.
+    event_classification: Optional[EventClassification] = None
+    # Required only when outcome == INCIDENT — see the validator below.
+    structured_report: Optional[EventReportSections] = None
 
 
 class DecisionResult(BaseModel):
@@ -124,6 +196,8 @@ class DecisionResult(BaseModel):
     projection_narrative: Optional[str] = Field(
         default=None, max_length=_PROJECTION_NARRATIVE_MAX_LENGTH
     )
+    event_classification: Optional[EventClassification] = None
+    structured_report: Optional[EventReportSections] = None
     abstention_reason: Optional[str] = None
     # Propagated per Frozen Decisions — set by application code, never the
     # model. Deliberately absent from _LLMDecisionDraft (see module
@@ -162,6 +236,36 @@ class DecisionResult(BaseModel):
                 raise ValueError(
                     f"recommendation_rationale must be null when outcome={self.outcome.value}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_event_classification_null_when_inappropriate(self) -> "DecisionResult":
+        # Acute-Hazard Trigger Phase (decision 4/6): same nullability shape
+        # as recommendation above — required for INCIDENT/WATCH, null for
+        # NO_INCIDENT/ABSTAIN.
+        appropriate_outcomes = (DecisionOutcome.INCIDENT, DecisionOutcome.WATCH)
+        if self.outcome in appropriate_outcomes:
+            if self.event_classification is None:
+                raise ValueError(
+                    f"event_classification is required when outcome={self.outcome.value}"
+                )
+        elif self.event_classification is not None:
+            raise ValueError(
+                f"event_classification must be null when outcome={self.outcome.value}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_structured_report_null_when_inappropriate(self) -> "DecisionResult":
+        # Required only for INCIDENT (WATCH keeps the simpler existing
+        # reasoning_summary only, per the developer's explicit choice).
+        if self.outcome == DecisionOutcome.INCIDENT:
+            if self.structured_report is None:
+                raise ValueError("structured_report is required when outcome=INCIDENT")
+        elif self.structured_report is not None:
+            raise ValueError(
+                f"structured_report must be null when outcome={self.outcome.value}"
+            )
         return self
 
     @model_validator(mode="after")

@@ -71,6 +71,13 @@ class EvidencePackage(Base):
     # PressureProjector history yet (Phase 11's own established pattern).
     # Never retroactively backfilled on existing rows.
     predictive_projection_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Acute-Hazard Trigger Phase (schema 1.2): both NULLABLE — absent on
+    # every pre-1.2-era row and on every RISK/FALLBACK/OPERATOR package,
+    # unconditionally. Only ever populated for a package built from an
+    # ACUTE_HAZARD trigger. See evidence_package.py's AcuteHazardSignalSnapshot
+    # / EventWindow dataclasses for the JSON shape.
+    acute_hazard_signal_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event_window: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

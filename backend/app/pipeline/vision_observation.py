@@ -108,6 +108,16 @@ class VisionInput:
     roi_crop_bbox: tuple[float, float, float, float]  # (x_min, y_min, x_max, y_max), PIXEL-space, clamped to frame bounds
     compact_metrics: CompactCrowdMetricsSummary
     trigger_reason: str  # pass-through from Phase 13's TriggerDecision.reason
+    # Acute-Hazard Trigger Phase: an OPTIONAL "before" frame, populated only
+    # for ACUTE_HAZARD triggers (see analysis_orchestrator.py's ring buffer)
+    # — gives the VLM one genuine temporal comparison point without
+    # unboundedly growing the image bundle. None for every RISK/FALLBACK/
+    # OPERATOR trigger, exactly as before this phase — those paths are
+    # completely unaffected. See minicpm_vlm.py's analyze() for how this is
+    # used, and its SANITIZATION_SYSTEM_PROMPT for how it's described to the
+    # model (still framed as untrusted scene evidence, same as every other
+    # image sent).
+    context_frame: Frame | None = None
 
 
 @dataclass

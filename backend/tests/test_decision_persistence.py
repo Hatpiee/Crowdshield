@@ -5,7 +5,12 @@ import inspect
 import uuid
 
 from app.models.decision import DecisionResultRow
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    RecommendationType,
+)
 from app.services import decision_service, evidence_service, session_service
 
 from tests.test_evidence_builder import (
@@ -13,6 +18,7 @@ from tests.test_evidence_builder import (
     _frame,
     _observation,
     _risk_state_result,
+    _structured_report,
     _trigger_decision,
     _vision_result,
 )
@@ -42,6 +48,8 @@ def _decision_result(evidence_package_id, outcome=DecisionOutcome.INCIDENT) -> D
             evidence_cited=["risk_score"], outcome=outcome,
             reasoning_summary="test reasoning", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
             recommendation_rationale="test rationale", projection_narrative=None,
+            event_classification=EventClassification.CROWD_CRUSH,
+            structured_report=_structured_report() if outcome == DecisionOutcome.INCIDENT else None,
             abstention_reason=None, confidence=0.8, binding_constraint="density_estimation_confidence",
         )
     return DecisionResult(

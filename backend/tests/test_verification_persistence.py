@@ -10,7 +10,12 @@ from dataclasses import dataclass
 
 from app.models.decision import DecisionResultRow
 from app.models.verification import VerificationResultRow
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    RecommendationType,
+)
 from app.pipeline.verification_result import VerificationResult
 from app.services import decision_service, evidence_service, session_service, verification_service
 
@@ -19,6 +24,7 @@ from tests.test_evidence_builder import (
     _frame,
     _observation,
     _risk_state_result,
+    _structured_report,
     _trigger_decision,
     _vision_result,
 )
@@ -53,6 +59,8 @@ def _setup(db_session, make_video, test_user):
         evidence_cited=["risk_score"], outcome=DecisionOutcome.INCIDENT,
         reasoning_summary="original reasoning", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
         recommendation_rationale="original rationale", projection_narrative=None,
+        event_classification=EventClassification.CROWD_CRUSH,
+        structured_report=_structured_report(),
         abstention_reason=None, confidence=evidence_result.confidence,
         binding_constraint=evidence_result.binding_constraint,
     )

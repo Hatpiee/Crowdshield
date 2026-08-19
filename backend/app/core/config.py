@@ -345,6 +345,76 @@ class Settings(BaseSettings):
     # placeholder-turned-real default; not empirically tuned (no VLM cost
     # model exists yet to optimize against).
     FALLBACK_ANALYSIS_INTERVAL: int = 60
+    # Acute-Hazard Trigger Phase (see DECISIONS.md "Acute-Hazard Trigger
+    # Phase" and acute_hazard_detector.py's own module docstring): the
+    # exponential-moving-average decay rate for each of the four candidate
+    # signals' own online baseline (mean/variance) — mirrors
+    # REVERSE_FLOW_BASELINE_EMA_ALPHA's identical role/value exactly.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md) — the real
+    # blast-video regression fixture the developer described was found, on
+    # inspection, to be byte-identical to people_clip.mp4 (see DECISIONS.md);
+    # this default has NOT yet been calibrated against real blast footage.
+    # 0.1 reused from REVERSE_FLOW_BASELINE_EMA_ALPHA pending real
+    # calibration via scripts/preview_acute_hazard_signals.py.
+    ACUTE_HAZARD_BASELINE_EMA_ALPHA: float = 0.1
+    # How many frame observations a signal must accumulate before its
+    # baseline is trusted enough to ever flag — mirrors REVERSE_FLOW_MIN_
+    # BASELINE_OBSERVATIONS's own warm-up role.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md, same
+    # calibration caveat as ACUTE_HAZARD_BASELINE_EMA_ALPHA above): 30
+    # frames (~1s at people_clip.mp4's 30fps), reusing the same "~1s at
+    # 30fps" warm-up reasoning already established for RISK_STATE_
+    # PERSISTENCE_FRAMES/BOTTLENECK_WINDOW_FRAMES.
+    ACUTE_HAZARD_MIN_BASELINE_OBSERVATIONS: int = 30
+    # Z-score-like deviation (in baseline standard deviations) a single
+    # signal must exceed to individually "fire" this frame.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md, same
+    # calibration caveat as above): 3.0, a standard statistical
+    # "significant deviation" starting point (three-sigma), NOT yet
+    # measured against real pre-event/event blast-footage distributions.
+    ACUTE_HAZARD_ZSCORE_THRESHOLD: float = 3.0
+    # How many of the four candidate signals (motion_energy, flow_divergence,
+    # detection_count_delta, scene_change) must individually fire on the SAME
+    # frame before the detector as a whole flags is_acute_hazard=True — the
+    # camera-motion/noise mitigation the design requires: a genuine camera
+    # pan spikes motion_energy/scene_change together but not flow_divergence
+    # (near-uniform motion has near-zero spatial gradient) or
+    # detection_count_delta, so it never reaches quorum. See
+    # acute_hazard_detector.py's module docstring.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md, same
+    # calibration caveat as above): 2 of 4 — a deliberate middle ground
+    # between "any single noisy signal is sufficient" (too permissive) and
+    # "all four must agree" (too strict — an explosion may not disrupt
+    # every signal equally, e.g. a distant blast may barely move detection
+    # counts).
+    ACUTE_HAZARD_MIN_CORROBORATING_SIGNALS: int = 2
+    # Minimum real seconds between successive ACUTE_HAZARD firings — a
+    # separate, SHORTER knob than VLM_COOLDOWN (RISK's 30s cooldown), since
+    # acute events are rare and severe enough that capturing multiple
+    # evidence snapshots across onset/peak/aftermath is valuable, unlike
+    # RISK's routine escalations where redundant re-triggering at the same
+    # severity is the concern being suppressed.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md, same
+    # calibration caveat as above): 5.0 seconds, not yet measured against
+    # real blast-footage event duration.
+    ACUTE_HAZARD_COOLDOWN_SECONDS: float = 5.0
+    # How many seconds of recent frames AnalysisOrchestrator's Loop A keeps
+    # buffered (a small ring buffer), so an ACUTE_HAZARD-triggered VLM
+    # request can include one genuine "before" frame for temporal
+    # comparison (see minicpm_vlm.py's optional 3rd image). NOT used by
+    # RISK/FALLBACK/OPERATOR triggers, which are unaffected by this buffer.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 2.0 seconds
+    # — long enough to comfortably precede a sudden event's onset, short
+    # enough to keep the ring buffer's memory footprint bounded (at
+    # people_clip.mp4's 30fps/576x720, ~60 frames * ~1.2MB/frame is a
+    # modest, bounded allocation, not unbounded growth over a long video).
+    ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS: float = 2.0
     # Phase 16 (Evidence Package, decision #5): filesystem path where the
     # representative frame and ROI crop images backing each persisted
     # EvidencePackage are stored. Same cwd-relative resolution pattern as
@@ -357,7 +427,67 @@ class Settings(BaseSettings):
     # consistency — same retry-then-raise failure discipline as
     # VLMUnavailableError (Phase 14), now for LLMUnavailableError.
     LLM_MAX_RETRIES: int = 2
-    LLM_REQUEST_TIMEOUT_SECONDS: float = 90.0
+    # Reasoner Stability phase, Step 4/8: mirrors VERIFIER_MAX_THINKING_
+    # TOKENS's own precedent (a measured generous backstop against
+    # pathological runaway generation, not an active constraint under
+    # normal operation) — the Reasoner's `options` never bounded
+    # `num_predict` at all before this phase, unlike the Verifier. Real
+    # measured eval_count for the heaviest real case (INCIDENT outcome +
+    # full 6-field structured_report, AFTER the field-length tightening
+    # below), n=3: 318, 314, 321 tokens (max=321). ~4x that observed
+    # maximum (same margin ratio as VERIFIER_MAX_THINKING_TOKENS=1000's own
+    # ~4x-of-253 precedent): 321 * 4 = 1284, rounded to 1300 — comfortably
+    # covers WATCH (~169 tokens) and NO_INCIDENT (~100 tokens) cases too.
+    LLM_MAX_GENERATION_TOKENS: int = 1300
+    # RECALIBRATED TWICE (Reasoner Stability phase, superseding the
+    # Acute-Hazard Trigger phase's own 135.0 recalibration below it).
+    #
+    # ROOT CAUSE (empirically confirmed, not assumed — see
+    # scripts/measure_reasoner_latency.py and DECISIONS.md's "Reasoner
+    # Stability" entry): the 135.0 value was real-measured (n=3) but
+    # against a LIGHTER real sample than the failure case actually needed.
+    # A SEPARATE, more fundamental bug compounded it: reasoner.py's
+    # DecisionResult(...) construction call never actually passed
+    # draft.event_classification/draft.structured_report through at all —
+    # both silently stayed at their Pydantic None defaults, so EVERY
+    # INCIDENT/WATCH-outcome response unconditionally failed
+    # DecisionResult's own business-rule validator and retried, burning
+    # 1-2 EXTRA full ~100s+ real LLM calls on every such decision
+    # regardless of model behavior. That propagation bug is now fixed
+    # (reasoner.py) — a genuinely well-formed first-attempt response no
+    # longer retries at all (see test_reasoner.py's new mocked regression
+    # tests).
+    #
+    # With that bug fixed, this phase re-measured the Reasoner's real
+    # single-attempt latency for the heaviest genuine case (INCIDENT +
+    # full structured_report) TWICE: once against the ORIGINAL 800-char/
+    # field schema (n=2, diagnostic-only extended timeout to observe
+    # natural completion: 169.26s, 159.54s — the model was ALREADY not
+    # hitting that ceiling, response_chars ~1545 well under the ~4800-char
+    # theoretical max), and again after tightening
+    # _EVENT_REPORT_SECTION_MAX_LENGTH 800->320 (decision_result.py) and
+    # adding a CONCISENESS RULE to SYSTEM_PROMPT (n=3): 171.41s, 135.54s,
+    # 145.12s (max=171.41s, mean=150.69s). Tightening reduced eval_count
+    # modestly (~362 -> ~318 tokens, ~12%) but did NOT proportionally cut
+    # wall-clock time, because the bottleneck is genuinely the CPU-served
+    # Ollama instance's per-token generation rate (~2.2-2.3 tokens/sec for
+    # this larger, more structured output — measured directly from
+    # eval_count/eval_duration), not excess verbosity or schema size —
+    # i.e. this is REAL, near-irreducible generation cost for a genuinely
+    # 6-section rich report, not a bug to keep chasing. Per the established
+    # methodology, OBSERVED MAXIMUM (post-fix, post-tightening) plus a 20%
+    # safety margin: 171.41 * 1.2 = 205.69, rounded up to 210.0.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 210.0,
+    # informed by REAL measured data (n=3 post-fix, plus n=2 pre-fix and
+    # n=3 at the original 90.0s-era baseline — 8 total real crisis-case
+    # calls across this phase and the prior one). Materially higher than
+    # the Acute-Hazard Trigger phase's own 135.0 because that number was
+    # measured BEFORE the propagation bug was found — every one of ITS 3
+    # samples had almost certainly ALSO been silently retried, so it
+    # inadvertently measured a lighter-outcome or luckier-variance sample,
+    # not the genuine worst-case single-attempt cost this number now is.
+    LLM_REQUEST_TIMEOUT_SECONDS: float = 210.0
     LLM_TEMPERATURE: float = 0.15
     # Phase 17 (decision #4): the confidence floor AT OR BELOW which
     # should_abstain() short-circuits to ABSTAIN without calling the LLM at
@@ -474,6 +604,17 @@ class Settings(BaseSettings):
     # frame of a long video). Not benchmarked against real dashboard
     # scrubbing UX — a candidate for Sprint-0 (§35) recalibration.
     HEATMAP_GENERATION_INTERVAL_SECONDS: float = 5.0
+    # Heatmap Rendering Rewrite (see DECISIONS.md): opacity of the
+    # colormap layer when composited over the real source video frame via
+    # cv2.addWeighted (heatmap_rendering.py) — favors the colormap staying
+    # the dominant, legible signal while real scene context (people,
+    # obstacles, the event itself) remains visible underneath, replacing
+    # the prior phase's flat "no compositing at all" rendering.
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 0.55, a
+    # starting point favoring the data layer slightly over scene context;
+    # not benchmarked against real operator legibility testing.
+    HEATMAP_OVERLAY_ALPHA: float = 0.55
     # Phase 21 (Gap 2, Step 4): expiry for short-lived, single-purpose
     # video-stream tokens (stream_token.py) — a browser <video> tag cannot
     # attach a Bearer header, so a query-parameter token is used instead,

@@ -1,7 +1,13 @@
+import numpy as np
+
 from app.core.config import settings
 from app.models.heatmap import HeatmapSnapshot, HeatmapType
 from app.services import heatmap_service, session_service
 from tests.fixtures.crowd_metrics_builder import FRAME_HEIGHT, FRAME_WIDTH, make_crowd_metrics
+
+# Heatmap Rendering Rewrite: every render_* function now composites over a
+# real source frame.
+_SOURCE_FRAME = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
 
 
 def _make_session_with_snapshots(db_session, make_video, test_user, with_projection=True):
@@ -12,7 +18,7 @@ def _make_session_with_snapshots(db_session, make_video, test_user, with_project
         frame_number=5, timestamp_seconds=0.166, with_projection=with_projection
     )
     heatmap_service.generate_and_persist_heatmaps(
-        db_session, session.id, 5, 0.166, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT
+        db_session, session.id, 5, 0.166, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT, _SOURCE_FRAME
     )
     return session
 

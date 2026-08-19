@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 from app.models.incident import ClosureReason, IncidentLifecycleStatus, IncidentPriority, OperatorActionType
-from app.pipeline.decision_result import RecommendationType
+from app.pipeline.decision_result import EventClassification, RecommendationType
 from app.schemas.decision import DecisionResultRead
 from app.schemas.evidence import EvidencePackageRead
 
@@ -51,6 +51,10 @@ class IncidentRead(BaseModel):
     acknowledged_at: Optional[datetime]
     acknowledged_by: Optional[uuid.UUID]
     latest_recommendation: Optional[RecommendationType]
+    # Acute-Hazard Trigger Phase: same "latest linked decision" derivation
+    # as latest_recommendation above — lets the incident list show WHY it
+    # exists without opening the full drill-down.
+    latest_event_classification: Optional[EventClassification]
     # Ordered chronologically by correlated_at (Resolution 1) — the
     # incident's real timeline, oldest first.
     linked_evidence: list[IncidentTimelineEntryRead]

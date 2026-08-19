@@ -66,6 +66,8 @@ def _decision_to_read(
         recommendation=row.recommendation,
         recommendation_rationale=row.recommendation_rationale,
         projection_narrative=row.projection_narrative,
+        event_classification=row.event_classification,
+        structured_report=row.structured_report,
         abstention_reason=row.abstention_reason,
         confidence=row.confidence,
         binding_constraint=row.binding_constraint,

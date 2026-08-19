@@ -1,0 +1,17 @@
+Created REAL AnalysisSession id=eeb14a67-e784-48a1-bc41-5fcfaec3f7ba against REAL people_clip.mp4 (video_id=7578ea39-4a8a-40d3-a1e6-75bf0dc75e63)
+
+=== Running the REAL production AnalysisOrchestrator.run() synchronously ===
+AnalysisOrchestrator: Loop B DROPPED for session_id=eeb14a67-e784-48a1-bc41-5fcfaec3f7ba (MAX_CONCURRENT_SEMANTIC_ANALYSES=1 already reached) — trigger_type=ACUTE_HAZARD reason='acute hazard signals corroborated: motion_energy, flow_divergence' timestamp=18.87s
+AnalysisOrchestrator Loop B: Verifier unavailable for decision_id=9b5631a8-4905-497c-b294-1dd5a7bf4596: Ollama at http://localhost:11434 unavailable during verify(): timed out
+orchestrator.run() returned.
+Final session.status=COMPLETED
+
+Total EvidencePackage rows: 3, of which ACUTE_HAZARD: 3
+  ACUTE_HAZARD package t=2.00s -> decision outcome=ABSTAIN event_classification=None
+  ACUTE_HAZARD package t=7.00s -> decision outcome=ABSTAIN event_classification=None
+  ACUTE_HAZARD package t=13.77s -> decision outcome=INCIDENT event_classification=OBSTRUCTION_OR_BARRIER
+
+Total REAL Incident rows for this session (any trigger type): 1
+ACUTE_HAZARD-sourced decisions with outcome=INCIDENT: 1
+
+RESULT: an ACUTE_HAZARD trigger on calm footage produced a real INCIDENT outcome â€” reporting honestly, investigate whether this is a genuine event in the footage or an over-sensitive threshold.

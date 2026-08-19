@@ -8,7 +8,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.config import settings
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    EventReportSections,
+    RecommendationType,
+)
 from app.pipeline.evidence_package import (
     EvidencePackageResult, PredictiveProjectionSnapshot, RiskStateSnapshot,
 )
@@ -86,6 +92,15 @@ def _real_well_grounded_decision() -> DecisionResult:
             "The projected pressure is 9.46, which is expected to occur within "
             "the next 30 seconds. The model has a moderate confidence level "
             "with an R-squared value of 0.41."
+        ),
+        event_classification=EventClassification.CROWD_CRUSH,
+        structured_report=EventReportSections(
+            event_summary="test event summary",
+            observed_evidence=["test observed evidence item"],
+            behavioral_analysis="test behavioral analysis",
+            spatial_analysis="test spatial analysis",
+            temporal_analysis="test temporal analysis",
+            crowd_risk_context="test crowd risk context",
         ),
         abstention_reason=None, confidence=0.5, binding_constraint="density_estimation_confidence",
     )

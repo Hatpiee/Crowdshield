@@ -26,8 +26,11 @@ from sqlalchemy.orm import Session
 from app.core.config import REPO_ROOT, settings
 from app.models.analysis_session import AnalysisSession
 from app.pipeline.crowd_metrics import CrowdMetrics
+from app.pipeline.acute_hazard_detector import AcuteHazardSignal
 from app.pipeline.evidence_package import (
+    AcuteHazardSignalSnapshot,
     Contradiction,
+    EventWindow,
     EvidencePackageResult,
     PredictiveProjectionSnapshot,
     RiskStateSnapshot,
@@ -36,7 +39,7 @@ from app.pipeline.evidence_package import (
 from app.pipeline.frame import Frame
 from app.pipeline.predictive_projection import PredictiveProjection
 from app.pipeline.risk_state import RiskState, RiskStateResult
-from app.pipeline.trigger_engine import TriggerDecision
+from app.pipeline.trigger_engine import TriggerDecision, TriggerType
 from app.pipeline.vision_observation import (
     CompactCrowdMetricsSummary,
     ObservationCategory,
@@ -204,6 +207,8 @@ class EvidenceBuilder:
         vision_result: VisionAnalysisResult | None,
         vlm_call_succeeded: bool,
         predictive_projection: Optional[PredictiveProjection] = None,
+        acute_hazard_signal: Optional[AcuteHazardSignal] = None,
+        context_frame_timestamp_seconds: Optional[float] = None,
     ) -> EvidencePackageResult:
         session = db.get(AnalysisSession, session_id)
         if session is None:
@@ -255,6 +260,37 @@ class EvidenceBuilder:
                 r_squared=predictive_projection.r_squared,
             )
 
+        # Acute-Hazard Trigger Phase: both stay None unless the CALLER
+        # (AnalysisOrchestrator, for an ACUTE_HAZARD trigger only) actually
+        # supplied a real AcuteHazardSignal — never fabricated for any other
+        # trigger type, matching this project's own guard rails elsewhere
+        # (e.g. predictive_projection_snapshot above).
+        acute_hazard_signal_snapshot = None
+        event_window = None
+        if acute_hazard_signal is not None and trigger_decision.trigger_type == TriggerType.ACUTE_HAZARD:
+            acute_hazard_signal_snapshot = AcuteHazardSignalSnapshot(
+                corroborating_signals=list(acute_hazard_signal.corroborating_signals),
+                z_scores=dict(acute_hazard_signal.z_scores),
+            )
+            # Decision 3 ("temporal evidence matters"): onset is
+            # deliberately represented as the START of the lookback window
+            # actually used, never a fabricated precise instant — see
+            # EventWindow's own docstring.
+            onset_window_start = (
+                context_frame_timestamp_seconds
+                if context_frame_timestamp_seconds is not None
+                else max(
+                    0.0,
+                    trigger_decision.timestamp_seconds
+                    - settings.ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS,
+                )
+            )
+            event_window = EventWindow(
+                onset_window_start_seconds=onset_window_start,
+                peak_timestamp_seconds=trigger_decision.timestamp_seconds,
+                context_frame_timestamp_seconds=context_frame_timestamp_seconds,
+            )
+
         return EvidencePackageResult(
             package_id=package_id,
             schema_version=SCHEMA_VERSION,
@@ -286,4 +322,6 @@ class EvidenceBuilder:
             roi_crop_path=roi_crop_path,
             roi_bbox=tuple(roi_bbox),
             predictive_projection_snapshot=projection_snapshot,
+            acute_hazard_signal_snapshot=acute_hazard_signal_snapshot,
+            event_window=event_window,
         )

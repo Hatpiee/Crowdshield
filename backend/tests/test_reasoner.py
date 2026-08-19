@@ -2,6 +2,7 @@
 tests against the actually-pulled qwen3:8b tag — same "never claim tested
 without testing" standard as Phase 14's test_minicpm_vlm.py."""
 
+import json
 import re
 import uuid
 from unittest.mock import MagicMock
@@ -9,7 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.config import settings
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, _LLMDecisionDraft
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    _LLMDecisionDraft,
+)
 from app.pipeline.evidence_package import (
     Contradiction,
     EvidencePackageResult,
@@ -99,6 +105,80 @@ def test_schema_field_order_evidence_cited_before_outcome():
     schema = _LLMDecisionDraft.model_json_schema()
     keys = list(schema["properties"].keys())
     assert keys.index("evidence_cited") < keys.index("outcome")
+
+
+def _fake_chat_response(payload: dict):
+    """Mocked ollama ChatResponse-shaped object — reasoner.py only ever
+    reads `response.message.content`, so this is the minimal real shape."""
+
+    class _Message:
+        content = json.dumps(payload)
+
+    class _Response:
+        message = _Message()
+
+    return _Response()
+
+
+def _incident_payload(event_classification=None) -> dict:
+    return {
+        "evidence_cited": ["risk_score"],
+        "outcome": "INCIDENT",
+        "reasoning_summary": "Dense crowd compression observed against a barrier.",
+        "recommendation": "DEPLOY_ADDITIONAL_SECURITY",
+        "recommendation_rationale": "Crowd compression requires immediate intervention.",
+        "projection_narrative": None,
+        "event_classification": event_classification,
+        "structured_report": {
+            "event_summary": "Crowd compression detected near the barrier.",
+            "observed_evidence": ["dense crowd compression", "reduced individual mobility"],
+            "behavioral_analysis": "People appear unable to move freely.",
+            "spatial_analysis": "Localized to one region near the barrier.",
+            "temporal_analysis": "Onset within the last few observed frames.",
+            "crowd_risk_context": "risk_score=95.0 (CRITICAL) is consistent with the observed compression.",
+        },
+    }
+
+
+def test_missing_event_classification_on_incident_defaults_to_unknown_without_retry():
+    """Regression guard (Reasoner Stability phase): reasoner.py's DecisionResult
+    construction previously never passed draft.event_classification/
+    draft.structured_report through at all, so EVERY INCIDENT/WATCH outcome
+    unconditionally failed business-rule validation and retried — this test
+    proves BOTH that a genuinely omitted event_classification is handled
+    with a single, honest, deterministic UNKNOWN default, AND that no
+    retry (no second real/mocked call) is burned doing it."""
+    reasoner = Reasoner()
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(_incident_payload(event_classification=None)))
+
+    package = _package(
+        risk_score=95.0, risk_state=RiskState.CRITICAL, vision_observations=[_hazard_observation()],
+    )
+    result = reasoner.reason(package)
+
+    assert result.outcome == DecisionOutcome.INCIDENT
+    assert result.event_classification == EventClassification.UNKNOWN
+    reasoner._client.chat.assert_called_once()
+
+
+def test_event_classification_and_structured_report_propagate_from_model_output():
+    """Regression guard: when the model DOES supply event_classification, it
+    must actually reach the persisted DecisionResult unchanged — proves the
+    call site's field-wiring bug (found and fixed this phase) stays fixed."""
+    reasoner = Reasoner()
+    payload = _incident_payload(event_classification="EXPLOSIVE_EVENT")
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(payload))
+
+    package = _package(
+        risk_score=95.0, risk_state=RiskState.CRITICAL, vision_observations=[_hazard_observation()],
+    )
+    result = reasoner.reason(package)
+
+    assert result.event_classification == EventClassification.EXPLOSIVE_EVENT
+    assert result.structured_report is not None
+    assert result.structured_report.event_summary == payload["structured_report"]["event_summary"]
+    assert result.structured_report.observed_evidence == payload["structured_report"]["observed_evidence"]
+    reasoner._client.chat.assert_called_once()
 
 
 def test_llm_unavailable_raises_not_silent_fabrication(monkeypatch):

@@ -11,6 +11,7 @@ passed as None throughout — safe, since it's never dereferenced.
 """
 
 from app.core.config import Settings
+from app.pipeline.acute_hazard_detector import AcuteHazardSignal
 from app.pipeline.risk_state import RiskState, RiskStateResult
 from app.pipeline.trigger_engine import TriggerEngine, TriggerType
 
@@ -161,6 +162,59 @@ def test_priority_risk_wins_over_fallback_when_both_true_and_fallback_stays_pend
     # cycle — it should still fire on the very next eligible check.
     decision2 = engine.evaluate(None, _rsr(2, t + 0.5, RiskState.ELEVATED, False))
     assert decision2.trigger_type == TriggerType.FALLBACK
+
+
+def _acute_signal(frame_number: int, timestamp_seconds: float, is_acute_hazard: bool) -> AcuteHazardSignal:
+    return AcuteHazardSignal(
+        frame_number=frame_number, timestamp_seconds=timestamp_seconds,
+        is_acute_hazard=is_acute_hazard,
+        corroborating_signals=["motion_energy", "flow_divergence"] if is_acute_hazard else [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Acute-Hazard Trigger Phase: ACUTE_HAZARD branch + priority ordering
+# (decision #9: OPERATOR > ACUTE_HAZARD > RISK > FALLBACK > NONE)
+# ---------------------------------------------------------------------------
+
+
+def test_acute_hazard_fires_when_signal_flags_and_no_operator_request():
+    engine = TriggerEngine()
+    decision = engine.evaluate(
+        None, _rsr(1, 1.0, RiskState.NORMAL, False),
+        acute_hazard_signal=_acute_signal(1, 1.0, is_acute_hazard=True),
+    )
+    assert decision.trigger_type == TriggerType.ACUTE_HAZARD
+    assert "motion_energy" in decision.reason
+    assert "flow_divergence" in decision.reason
+
+
+def test_acute_hazard_signal_not_flagged_does_not_fire():
+    engine = TriggerEngine()
+    decision = engine.evaluate(
+        None, _rsr(1, 1.0, RiskState.NORMAL, False),
+        acute_hazard_signal=_acute_signal(1, 1.0, is_acute_hazard=False),
+    )
+    assert decision.trigger_type == TriggerType.NONE
+
+
+def test_acute_hazard_preempts_risk_even_on_a_confirmed_escalation():
+    engine = TriggerEngine()
+    decision = engine.evaluate(
+        None, _rsr(1, 1.0, RiskState.ELEVATED, True),
+        acute_hazard_signal=_acute_signal(1, 1.0, is_acute_hazard=True),
+    )
+    assert decision.trigger_type == TriggerType.ACUTE_HAZARD
+
+
+def test_operator_still_wins_over_acute_hazard():
+    engine = TriggerEngine()
+    decision = engine.evaluate(
+        None, _rsr(1, 1.0, RiskState.NORMAL, False),
+        operator_requested=True,
+        acute_hazard_signal=_acute_signal(1, 1.0, is_acute_hazard=True),
+    )
+    assert decision.trigger_type == TriggerType.OPERATOR
 
 
 def test_two_trigger_engine_instances_do_not_share_state():

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
+import numpy as np
 from sqlalchemy.orm import Session
 
 from app.core.config import REPO_ROOT, settings
@@ -34,12 +35,13 @@ from app.pipeline.heatmap_rendering import (
     render_risk_heatmap,
 )
 
-# Reasonable quality/size tradeoff for a debug/analytical artifact (not a
-# user-facing photo) — 90 keeps visible colormap banding minimal while
-# still compressing meaningfully smaller than quality=100. Not a new env
-# var; same "fixed cosmetic/format detail" category as heatmap_rendering.py's
-# INTER_LINEAR/TURBO choices.
-JPEG_QUALITY = 90
+# Heatmap Rendering Rewrite: raised 90 -> 95. These artifacts are now
+# composited PHOTOGRAPHIC frames (source video + colormap overlay), not
+# flat colormap blocks — a higher quality setting matters more now that
+# real scene detail (not just smooth color gradients) is part of the
+# image. JPEG format itself was investigated and deliberately kept (see
+# heatmap_rendering.py's module docstring) rather than switched to PNG.
+JPEG_QUALITY = 95
 
 
 def get_storage_dir() -> Path:
@@ -106,21 +108,33 @@ def generate_and_persist_heatmaps(
     crowd_metrics: CrowdMetrics,
     frame_width: int,
     frame_height: int,
+    source_frame_image: np.ndarray,
 ) -> HeatmapGenerationResult:
+    """`source_frame_image` (Heatmap Rendering Rewrite): the REAL decoded
+    video frame at this exact frame_number/timestamp_seconds, composited
+    underneath every rendered colormap layer (see heatmap_rendering.py's
+    `_composite_over_source_frame`) — the caller already has this frame in
+    scope at the call site (AnalysisOrchestrator._run_loop_a), no new I/O
+    is introduced here."""
     result = HeatmapGenerationResult()
 
-    density_image = render_density_heatmap(crowd_metrics.core.density, frame_width, frame_height)
+    density_image = render_density_heatmap(
+        crowd_metrics.core.density, frame_width, frame_height, source_frame_image, timestamp_seconds
+    )
     result.generated[HeatmapType.DENSITY] = _write_and_persist(
         db, session_id, HeatmapType.DENSITY, frame_number, timestamp_seconds, density_image
     )
 
-    pressure_image = render_pressure_heatmap(crowd_metrics.core.pressure, frame_width, frame_height)
+    pressure_image = render_pressure_heatmap(
+        crowd_metrics.core.pressure, frame_width, frame_height, source_frame_image, timestamp_seconds
+    )
     result.generated[HeatmapType.PRESSURE] = _write_and_persist(
         db, session_id, HeatmapType.PRESSURE, frame_number, timestamp_seconds, pressure_image
     )
 
     flow_congestion_image = render_flow_congestion_heatmap(
-        crowd_metrics.congestion, crowd_metrics.core.flow, frame_width, frame_height
+        crowd_metrics.congestion, crowd_metrics.core.flow, frame_width, frame_height,
+        source_frame_image, timestamp_seconds,
     )
     result.generated[HeatmapType.FLOW_CONGESTION] = _write_and_persist(
         db, session_id, HeatmapType.FLOW_CONGESTION, frame_number, timestamp_seconds,
@@ -134,6 +148,8 @@ def generate_and_persist_heatmaps(
         crowd_metrics.reverse_flow,
         frame_width,
         frame_height,
+        source_frame_image,
+        timestamp_seconds,
     )
     result.generated[HeatmapType.RISK] = _write_and_persist(
         db, session_id, HeatmapType.RISK, frame_number, timestamp_seconds, risk_image
@@ -151,6 +167,8 @@ def generate_and_persist_heatmaps(
             crowd_metrics.predictive_projection,
             frame_width,
             frame_height,
+            source_frame_image,
+            timestamp_seconds,
         )
         result.generated[HeatmapType.PREDICTIVE] = _write_and_persist(
             db, session_id, HeatmapType.PREDICTIVE, frame_number, timestamp_seconds,

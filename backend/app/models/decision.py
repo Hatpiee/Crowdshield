@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.pipeline.decision_result import DecisionOutcome, RecommendationType
+from app.pipeline.decision_result import DecisionOutcome, EventClassification, RecommendationType
 
 
 class DecisionResultRow(Base):
@@ -40,6 +40,18 @@ class DecisionResultRow(Base):
     )
     recommendation_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     projection_narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Acute-Hazard Trigger Phase: NULLABLE — applies to every INCIDENT/WATCH
+    # decision regardless of trigger type (developer's explicit choice: a
+    # RISK-triggered crowd-crush incident is correctly tagged CROWD_CRUSH
+    # too), null for NO_INCIDENT/ABSTAIN and for every pre-this-phase row.
+    event_classification: Mapped[EventClassification | None] = mapped_column(
+        SAEnum(EventClassification, name="event_classification", native_enum=True),
+        nullable=True,
+    )
+    # NULLABLE JSONB — required only when outcome=INCIDENT (see
+    # decision_result.py's EventReportSections/DecisionResult validator);
+    # null for WATCH/NO_INCIDENT/ABSTAIN and every pre-this-phase row.
+    structured_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     abstention_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     binding_constraint: Mapped[str] = mapped_column(String, nullable=False)

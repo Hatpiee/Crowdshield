@@ -19,6 +19,10 @@ interface IncidentItem {
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   latest_recommendation: string | null;
+  // Acute-Hazard Trigger Phase: lets the operator see WHY an incident
+  // exists (e.g. EXPLOSIVE_EVENT vs CROWD_CRUSH) without opening the full
+  // drill-down page.
+  latest_event_classification: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +122,11 @@ export default function IncidentsList({
                       <span className="text-cs-amber">· ELEVATED</span>
                     )}
                     {incident.acknowledged && <span className="text-cs-teal">· ACKNOWLEDGED</span>}
+                    {incident.latest_event_classification && (
+                      <span className="border border-cs-amber px-1.5 py-0.5 text-[10px] text-cs-amber">
+                        {incident.latest_event_classification.replace(/_/g, " ")}
+                      </span>
+                    )}
                   </div>
                   <span className="text-[11px] normal-case text-cs-muted">
                     detected {formatDateTime(incident.created_at)}

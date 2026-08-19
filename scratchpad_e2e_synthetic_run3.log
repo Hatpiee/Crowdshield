@@ -1,0 +1,23 @@
+Generating synthetic acute-event fixture directly into real video storage (clearly labeled, not real footage)...
+Created REAL VideoAsset id=424e1d5f-6a52-4644-8763-af49e05f15f7 storage_path=C:\Dev\Crowdshield\storage\videos\fab68e0a-4472-4497-b296-63cb2b95b3af.mp4
+Created REAL AnalysisSession id=b4950041-6e2a-4461-a793-ed587f4bf4c8, status=QUEUED (real production sequence: create_session -> start_session)
+
+=== Running the REAL production AnalysisOrchestrator.run() synchronously (blocks for real Loop A + any spawned Loop B) ===
+orchestrator.run() returned.
+Final session.status=COMPLETED
+
+=== Inspecting REAL persisted rows (never manually inserted) ===
+EvidencePackage rows for this session: 1
+  of which trigger_type=ACUTE_HAZARD: 1
+  package_id=345e1ceb-35c7-4610-abfe-747a7c4fda0f frame=40 t=1.33s trigger_reason='acute hazard signals corroborated: motion_energy, flow_divergence'
+    acute_hazard_signal_snapshot={'z_scores': {'scene_change': 1.4403960300707852, 'motion_energy': 18.587755266524944, 'flow_divergence': 29.610425065813985, 'detection_count_delta': 0.0}, 'corroborating_signals': ['motion_energy', 'flow_divergence']}
+    event_window={'peak_timestamp_seconds': 1.3333333333333333, 'onset_window_start_seconds': 0.0, 'context_frame_timestamp_seconds': 0.0}
+    decision_id=842b5ceb-c62e-4ad3-9f6b-0e2c259ce8cf outcome=ABSTAIN
+      event_classification=None
+      recommendation=None
+
+Total REAL Incident rows for this session: 0
+
+RESULT: ACUTE_HAZARD fired and the real chain ran, but outcome was NOT INCIDENT this run (WATCH/NO_INCIDENT/ABSTAIN) — reporting the real, non-forced outcome, not treating this as a failure.
+
+session_id=b4950041-6e2a-4461-a793-ed587f4bf4c8 (for further manual API inspection: GET /api/sessions/b4950041-6e2a-4461-a793-ed587f4bf4c8/incidents)

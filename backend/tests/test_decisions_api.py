@@ -3,7 +3,12 @@ GET /decisions/{id}, mirroring Phase 16's test_evidence_api.py patterns."""
 
 import uuid
 
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    RecommendationType,
+)
 from app.services import decision_service, evidence_service, session_service
 
 from tests.test_evidence_builder import (
@@ -36,6 +41,7 @@ def _persisted_decision(db_session, make_video, test_user):
         evidence_cited=["risk_score"], outcome=DecisionOutcome.WATCH,
         reasoning_summary="test reasoning", recommendation=RecommendationType.BROADCAST_PUBLIC_ANNOUNCEMENT,
         recommendation_rationale="test rationale", projection_narrative=None,
+        event_classification=EventClassification.CROWD_CRUSH,
         abstention_reason=None, confidence=0.8, binding_constraint="density_estimation_confidence",
     )
     row = decision_service.persist_decision_result(db_session, decision)

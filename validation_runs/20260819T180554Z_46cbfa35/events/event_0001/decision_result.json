@@ -1,0 +1,10 @@
+{
+  "decision_id": "0c60271a-9c83-4980-99d0-3432d5b39e3f",
+  "outcome": "ABSTAIN",
+  "reasoning_summary": "Abstained without LLM invocation: confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400",
+  "recommendation": null,
+  "event_classification": null,
+  "structured_report": null,
+  "abstention_reason": "confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400",
+  "confidence": 0.4
+}

@@ -29,17 +29,26 @@ from dataclasses import dataclass
 
 from sqlalchemy.exc import OperationalError
 
+import numpy as np
+
 from app.core import database
 from app.core.config import settings
 from app.models.analysis_session import AnalysisSession, SessionStatus
 from app.models.incident import Incident, IncidentLifecycleStatus
 from app.models.processing_run import ProcessingRun, ProcessingRunStatus
 from app.models.video import VideoAsset
+from app.pipeline.acute_hazard_detector import AcuteHazardSignal
 from app.pipeline.analysis_orchestrator import AnalysisOrchestrator
 from app.pipeline.bytetrack_adapter import ByteTrackAdapter
 from app.pipeline.crowd_grid import CrowdGrid
 from app.pipeline.crowd_metrics import CrowdMetricsEngine
-from app.pipeline.decision_result import DecisionOutcome, DecisionResult, RecommendationType
+from app.pipeline.decision_result import (
+    DecisionOutcome,
+    DecisionResult,
+    EventClassification,
+    EventReportSections,
+    RecommendationType,
+)
 from app.pipeline.dis_optical_flow import DISOpticalFlowAdapter
 from app.pipeline.evidence_builder import EvidenceBuilder
 from app.pipeline.minicpm_vlm import VLMUnavailableError
@@ -595,7 +604,7 @@ def test_loop_b_second_trigger_dropped_not_queued_when_cap_reached(
 
     first_thread = orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
-        trigger_decision, crowd_grid, video.width, video.height,
+        trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
     assert first_thread is not None
     assert entered.wait(timeout=5), "first Loop B invocation never started"
@@ -603,7 +612,7 @@ def test_loop_b_second_trigger_dropped_not_queued_when_cap_reached(
     caplog.set_level(logging.WARNING)
     second_thread = orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
-        trigger_decision, crowd_grid, video.width, video.height,
+        trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
     assert second_thread is None, "second trigger should be DROPPED, not queued, while the cap is reached"
     assert any("DROPPED" in record.message for record in caplog.records)
@@ -637,7 +646,7 @@ def test_loop_b_uses_its_own_fresh_db_session_never_loop_as(
     orchestrator = AnalysisOrchestrator(session.id)
     thread = orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
-        trigger_decision, crowd_grid, video.width, video.height,
+        trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
     thread.join(timeout=10)
 
@@ -702,6 +711,7 @@ def test_loop_b_vlm_unavailable_is_caught_gracefully_evidence_marked_incomplete(
     orchestrator._run_loop_b(
         session.id, builder, _FakeVisionModelDown(), _FakeReasonerAbstain(), None,
         frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
+        None, None,
     )  # must NOT raise — Loop A (and this call) must continue past a VLM failure
 
     packages = evidence_service.get_session_evidence_packages(db_session, session.id)
@@ -776,6 +786,15 @@ def test_active_incident_not_auto_resolved_when_video_ends(
                 recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
                 recommendation_rationale="fake",
                 projection_narrative=None,
+                event_classification=EventClassification.CROWD_CRUSH,
+                structured_report=EventReportSections(
+                    event_summary="test event summary",
+                    observed_evidence=["test observed evidence item"],
+                    behavioral_analysis="test behavioral analysis",
+                    spatial_analysis="test spatial analysis",
+                    temporal_analysis="test temporal analysis",
+                    crowd_risk_context="test crowd risk context",
+                ),
                 abstention_reason=None,
                 confidence=evidence_package.confidence,
                 binding_constraint=evidence_package.binding_constraint,
@@ -801,6 +820,7 @@ def test_active_incident_not_auto_resolved_when_video_ends(
         orchestrator._run_loop_b(
             session.id, builder, _FakeVisionModelDown(), _FakeReasonerIncident(), _FakePassingVerifier(),
             frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
+            None, None,
         )
 
     incidents = db_session.query(Incident).filter(Incident.session_id == session.id).all()
@@ -831,3 +851,111 @@ def test_active_incident_not_auto_resolved_when_video_ends(
         "the video/processing run reached its own terminal COMPLETED state — "
         "resolution is exclusively an operator action"
     )
+
+
+def test_loop_b_acute_hazard_trigger_builds_temporal_evidence_and_creates_incident(
+    db_session, test_user, make_processable_video,
+):
+    """Reasoner Stability / Acute-Hazard E2E validation phase: closes the
+    known, honestly-flagged gap from the prior phase's own DECISIONS.md
+    entry ("A dedicated ACUTE_HAZARD-triggered _run_loop_b integration test
+    ... was NOT added this session"). Same established technique as this
+    file's other Loop B tests (real `_run_loop_b`, fake only the LLM-backed
+    VLM/Reasoner/Verifier adapters) — but with trigger_type=ACUTE_HAZARD
+    and a REAL (directly-constructed, per this file's own TriggerDecision
+    convention) AcuteHazardSignal + a non-None context_frame, proving the
+    ACUTE_HAZARD-specific branches in evidence_builder.py (acute_hazard_
+    signal_snapshot/event_window population) and analysis_orchestrator.py
+    (context_frame threading) are genuinely exercised end-to-end, not just
+    unit-tested in isolation."""
+    video = make_processable_video()
+    frame, crowd_metrics, risk_result = _real_crowd_metrics_pair(video)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+
+    crowd_grid = CrowdGrid.from_frame_dimensions(video.width, video.height)
+    # ACUTE_HAZARD triggers localize ROI via the signal's own localization
+    # grid (analysis_orchestrator.py), not the crowd-crush risk grid —
+    # mirrored here for a faithful ROI, though the fake VLM below never
+    # actually reads pixels from it.
+    localization_grid = np.full((crowd_grid.rows, crowd_grid.cols), 42.0)
+    roi_bbox = select_roi(localization_grid, crowd_grid, video.width, video.height)
+    compact_metrics = CompactCrowdMetricsSummary(
+        risk_score=risk_result.risk_score, risk_state=risk_result.state,
+        max_density=float(crowd_metrics.core.density.grid.max()),
+        max_pressure=crowd_metrics.core.pressure.max_pressure,
+        pressure_units_disclaimer=crowd_metrics.core.pressure.units_disclaimer,
+        congested_cell_fraction=crowd_metrics.congestion.congested_cell_fraction,
+        reverse_flow_cell_fraction=crowd_metrics.reverse_flow.reverse_flow_cell_fraction,
+        bottleneck_signal_present=crowd_metrics.bottleneck is not None,
+        density_confidence=crowd_metrics.core.density.estimation_confidence,
+    )
+
+    acute_hazard_signal = AcuteHazardSignal(
+        frame_number=frame.frame_number, timestamp_seconds=frame.timestamp_seconds,
+        is_acute_hazard=True, corroborating_signals=["motion_energy", "flow_divergence"],
+        raw_values={"motion_energy": 500.0, "flow_divergence": 50.0, "detection_count_delta": 0.0, "scene_change": 0.2},
+        z_scores={"motion_energy": 9.5, "flow_divergence": 8.2, "detection_count_delta": 0.0, "scene_change": 1.1},
+        localization_grid=localization_grid, baseline_established=True,
+    )
+    trigger_decision = TriggerDecision(
+        frame_number=frame.frame_number, timestamp_seconds=frame.timestamp_seconds,
+        trigger_type=TriggerType.ACUTE_HAZARD, reason="test: forced ACUTE_HAZARD trigger",
+    )
+
+    class _FakeVisionModelDown:
+        def analyze(self, vision_input):
+            raise VLMUnavailableError("simulated: isolates evidence/incident wiring, not VLM behavior")
+
+    class _FakeReasonerExplosiveIncident:
+        def reason(self, evidence_package):
+            return DecisionResult(
+                decision_id=uuid.uuid4(),
+                evidence_package_id=evidence_package.package_id,
+                evidence_cited=["risk_score"],
+                outcome=DecisionOutcome.INCIDENT,
+                reasoning_summary="fake reasoner: forces a real ACUTE_HAZARD-sourced INCIDENT",
+                recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
+                recommendation_rationale="fake",
+                projection_narrative=None,
+                event_classification=EventClassification.EXPLOSIVE_EVENT,
+                structured_report=EventReportSections(
+                    event_summary="test event summary", observed_evidence=["test observed evidence item"],
+                    behavioral_analysis="test behavioral analysis", spatial_analysis="test spatial analysis",
+                    temporal_analysis="test temporal analysis", crowd_risk_context="test crowd risk context",
+                ),
+                abstention_reason=None,
+                confidence=evidence_package.confidence, binding_constraint=evidence_package.binding_constraint,
+            )
+
+    @dataclass
+    class _FakePassingVerifier:
+        def verify(self, decision, evidence_package):
+            return VerificationResult(
+                verification_id=uuid.uuid4(), decision_id=decision.decision_id, passed=True,
+                confidence_consistency_ok=True, evidence_grounding_existence_ok=True,
+                llm_checks=None, issues_found=[],
+            )
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    builder = EvidenceBuilder()
+
+    orchestrator._run_loop_b(
+        session.id, builder, _FakeVisionModelDown(), _FakeReasonerExplosiveIncident(), _FakePassingVerifier(),
+        frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
+        acute_hazard_signal, frame,
+    )
+
+    packages = evidence_service.get_session_evidence_packages(db_session, session.id)
+    assert len(packages) == 1
+    package = packages[0].package
+    assert package.trigger_type == TriggerType.ACUTE_HAZARD
+    assert package.acute_hazard_signal_snapshot is not None, (
+        "the ACUTE_HAZARD-specific evidence branch (evidence_builder.py) must have populated this"
+    )
+    assert package.acute_hazard_signal_snapshot["corroborating_signals"] == ["motion_energy", "flow_divergence"]
+    assert package.event_window is not None
+    assert package.event_window["peak_timestamp_seconds"] == frame.timestamp_seconds
+
+    incidents = db_session.query(Incident).filter(Incident.session_id == session.id).all()
+    assert len(incidents) == 1, "a real INCIDENT-outcome decision from an ACUTE_HAZARD trigger must create a real Incident row"
+    assert incidents[0].lifecycle_status == IncidentLifecycleStatus.DETECTED

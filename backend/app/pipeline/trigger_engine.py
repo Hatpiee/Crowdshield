@@ -17,9 +17,23 @@ engine never classifies risk itself.
 ============================================================
 DECISION #9 — trigger priority when multiple conditions are true at once
 ============================================================
-OPERATOR > RISK > FALLBACK > NONE, checked in that exact order every
-`evaluate()` call. An explicit human request always wins; a genuine risk
+OPERATOR > ACUTE_HAZARD > RISK > FALLBACK > NONE, checked in that exact
+order every `evaluate()` call. An explicit human request always wins;
+ACUTE_HAZARD comes next — it exists specifically to catch severe events a
+routine RISK escalation may miss entirely (see acute_hazard_detector.py's
+module docstring), so it preempts RISK; a genuine crowd-crush risk
 escalation next; a routine periodic check last.
+
+============================================================
+DECISION #11 (Acute-Hazard Trigger Phase) — ACUTE_HAZARD has its own
+independent cooldown, no override logic
+============================================================
+Unlike RISK's cooldown+override (decision #6 below, which needs an
+override because RISK has graded severity levels — NORMAL/ELEVATED/
+CRITICAL), ACUTE_HAZARD has no equivalent graded-severity concept from
+`AcuteHazardSignal` alone — it is a boolean "did enough signals corroborate
+this frame." A simple fixed suppression window (`ACUTE_HAZARD_COOLDOWN_
+SECONDS`) after firing is sufficient; no override branch is needed.
 
 ============================================================
 DECISION #5 — RISK fires on the state machine's OWN confirmed upward
@@ -64,6 +78,7 @@ import enum
 from dataclasses import dataclass
 
 from app.core.config import settings
+from app.pipeline.acute_hazard_detector import AcuteHazardSignal
 from app.pipeline.crowd_metrics import CrowdMetrics
 from app.pipeline.risk_state import RISK_STATE_RANK, RiskState, RiskStateResult
 
@@ -73,6 +88,9 @@ class TriggerType(str, enum.Enum):
     RISK = "RISK"
     FALLBACK = "FALLBACK"
     OPERATOR = "OPERATOR"
+    # Acute-Hazard Trigger Phase — see acute_hazard_detector.py's module
+    # docstring and decisions #9/#11 above.
+    ACUTE_HAZARD = "ACUTE_HAZARD"
 
 
 @dataclass
@@ -108,6 +126,7 @@ class TriggerEngine:
         crowd_metrics: CrowdMetrics,
         risk_state: RiskStateResult,
         operator_requested: bool = False,
+        acute_hazard_signal: AcuteHazardSignal | None = None,
     ) -> TriggerDecision:
         frame_number = risk_state.frame_number
         timestamp_seconds = risk_state.timestamp_seconds
@@ -125,6 +144,19 @@ class TriggerEngine:
         if operator_requested:
             decision = TriggerDecision(
                 frame_number, timestamp_seconds, TriggerType.OPERATOR, "operator requested"
+            )
+        elif acute_hazard_signal is not None and acute_hazard_signal.is_acute_hazard:
+            # Decision #9: ACUTE_HAZARD preempts RISK. Its own cooldown is
+            # already enforced inside AcuteHazardDetector.update() itself
+            # (decision #11) — is_acute_hazard is only ever True outside
+            # that detector's own cooldown window, so no second cooldown
+            # check is needed here.
+            signals = ", ".join(acute_hazard_signal.corroborating_signals)
+            decision = TriggerDecision(
+                frame_number,
+                timestamp_seconds,
+                TriggerType.ACUTE_HAZARD,
+                f"acute hazard signals corroborated: {signals}",
             )
         elif is_upward_transition:
             cooldown_active = (

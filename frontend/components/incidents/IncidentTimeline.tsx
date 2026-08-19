@@ -57,6 +57,20 @@ interface ContradictionData {
   resolution_status: string;
 }
 
+// Acute-Hazard Trigger Phase: both null for every RISK/FALLBACK/OPERATOR
+// package and every pre-this-phase row — present only on an
+// ACUTE_HAZARD-triggered EvidencePackage.
+interface AcuteHazardSignalData {
+  corroborating_signals: string[];
+  z_scores: Record<string, number>;
+}
+
+interface EventWindowData {
+  onset_window_start_seconds: number;
+  peak_timestamp_seconds: number;
+  context_frame_timestamp_seconds: number | null;
+}
+
 interface EvidencePackageData {
   id: string;
   schema_version: string;
@@ -75,6 +89,8 @@ interface EvidencePackageData {
   missing: string[];
   contradictions: ContradictionData[];
   evidence_items: EvidenceItemData[];
+  acute_hazard_signal_snapshot: AcuteHazardSignalData | null;
+  event_window: EventWindowData | null;
   created_at: string;
 }
 
@@ -92,6 +108,18 @@ interface VerificationData {
   created_at: string;
 }
 
+// Acute-Hazard Trigger Phase: populated for every INCIDENT/WATCH decision
+// regardless of trigger type; null for NO_INCIDENT/ABSTAIN and every
+// pre-this-phase row.
+interface StructuredReportData {
+  event_summary: string;
+  observed_evidence: string[];
+  behavioral_analysis: string;
+  spatial_analysis: string;
+  temporal_analysis: string;
+  crowd_risk_context: string;
+}
+
 interface DecisionResultData {
   id: string;
   evidence_package_id: string;
@@ -101,6 +129,8 @@ interface DecisionResultData {
   recommendation: string | null;
   recommendation_rationale: string | null;
   projection_narrative: string | null;
+  event_classification: string | null;
+  structured_report: StructuredReportData | null;
   abstention_reason: string | null;
   confidence: number;
   binding_constraint: string;
@@ -216,6 +246,51 @@ function TimelineEntryDetail({ entry, accessToken }: { entry: TimelineEntryData;
         </p>
       </SectionCard>
 
+      {/* Acute-Hazard Trigger Phase: baseline -> onset -> peak -> aftermath
+          timeline, present only for an ACUTE_HAZARD-triggered package.
+          onset_window_start_seconds is deliberately shown as the START of
+          a WINDOW, not a fabricated precise instant (see
+          evidence_package.py's EventWindow docstring) — peak_timestamp is
+          the one exact value here (the triggering frame itself). */}
+      {pkg.event_window && (
+        <SectionCard title="Event Timeline">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-cs-text">
+            <span className="border border-cs-border px-2 py-1 text-cs-muted uppercase">
+              Onset window from t={pkg.event_window.onset_window_start_seconds.toFixed(2)}s
+            </span>
+            <span className="text-cs-muted">→</span>
+            <span className="border border-cs-amber px-2 py-1 text-cs-amber uppercase">
+              Peak (trigger) t={pkg.event_window.peak_timestamp_seconds.toFixed(2)}s
+            </span>
+          </div>
+          {pkg.event_window.context_frame_timestamp_seconds !== null && (
+            <p className="mt-2 text-xs text-cs-muted">
+              &ldquo;Before&rdquo; comparison frame captured at t=
+              {pkg.event_window.context_frame_timestamp_seconds.toFixed(2)}s
+            </p>
+          )}
+          {pkg.acute_hazard_signal_snapshot && (
+            <div className="mt-3 border-t border-cs-border pt-3">
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Corroborating deterministic signals
+              </p>
+              <ul className="mt-1 flex flex-wrap gap-2">
+                {pkg.acute_hazard_signal_snapshot.corroborating_signals.map((signal) => (
+                  <li
+                    key={signal}
+                    className="border border-cs-teal px-2 py-0.5 font-mono text-[10px] text-cs-teal uppercase"
+                  >
+                    {signal.replace(/_/g, " ")}{" "}
+                    {pkg.acute_hazard_signal_snapshot!.z_scores[signal] !== undefined &&
+                      `(z=${pkg.acute_hazard_signal_snapshot!.z_scores[signal].toFixed(1)})`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </SectionCard>
+      )}
+
       {/* Crowd Metrics */}
       <SectionCard title="Crowd Metrics">
         <CrowdMetricsStatCards current={pkg.crowd_metrics_summary} />
@@ -287,10 +362,64 @@ function TimelineEntryDetail({ entry, accessToken }: { entry: TimelineEntryData;
 
       {/* Decision Intelligence */}
       <SectionCard title="Decision Intelligence">
-        <p className="font-mono text-sm uppercase" style={{ color: outcomeColor }}>
-          {decision.outcome}
-        </p>
-        <p className="mt-2 text-sm text-cs-text">{decision.reasoning_summary}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-mono text-sm uppercase" style={{ color: outcomeColor }}>
+            {decision.outcome}
+          </p>
+          {/* Acute-Hazard Trigger Phase: applies to every INCIDENT/WATCH
+              decision regardless of trigger type — an ordinary crowd-crush
+              incident shows CROWD_CRUSH here too, not a blank. */}
+          {decision.event_classification && (
+            <span className="border border-cs-amber px-2 py-0.5 font-mono text-[10px] text-cs-amber uppercase">
+              {decision.event_classification.replace(/_/g, " ")}
+            </span>
+          )}
+        </div>
+        {/* Structured report (required only when outcome=INCIDENT) takes
+            precedence when present — reasoning_summary alone remains the
+            source of truth for WATCH/NO_INCIDENT/ABSTAIN and every
+            pre-this-phase row. */}
+        {decision.structured_report ? (
+          <div className="mt-3 flex flex-col gap-3">
+            <p className="text-sm text-cs-text">{decision.structured_report.event_summary}</p>
+            <div>
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Observed Evidence
+              </p>
+              <ul className="mt-1 list-inside list-disc text-sm text-cs-text">
+                {decision.structured_report.observed_evidence.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Behavioral Analysis
+              </p>
+              <p className="mt-1 text-sm text-cs-text">{decision.structured_report.behavioral_analysis}</p>
+            </div>
+            <div>
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Spatial Analysis
+              </p>
+              <p className="mt-1 text-sm text-cs-text">{decision.structured_report.spatial_analysis}</p>
+            </div>
+            <div>
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Temporal Analysis
+              </p>
+              <p className="mt-1 text-sm text-cs-text">{decision.structured_report.temporal_analysis}</p>
+            </div>
+            <div>
+              <p className="font-mono text-[10px] tracking-[0.15em] text-cs-muted uppercase">
+                Crowd-Risk Context
+              </p>
+              <p className="mt-1 text-sm text-cs-text">{decision.structured_report.crowd_risk_context}</p>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-cs-text">{decision.reasoning_summary}</p>
+        )}
         {decision.evidence_cited.length > 0 && (
           <p className="mt-2 text-xs text-cs-muted">
             Evidence cited: {decision.evidence_cited.join(", ")}

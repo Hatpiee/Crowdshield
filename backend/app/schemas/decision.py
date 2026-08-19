@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from app.pipeline.decision_result import DecisionOutcome, RecommendationType
+from app.pipeline.decision_result import DecisionOutcome, EventClassification, RecommendationType
 
 
 class VerificationResultRead(BaseModel):
@@ -35,6 +35,16 @@ class DecisionResultRead(BaseModel):
     recommendation: Optional[RecommendationType]
     recommendation_rationale: Optional[str]
     projection_narrative: Optional[str]
+    # Acute-Hazard Trigger Phase: additive, both optional. event_classification
+    # is populated for every INCIDENT/WATCH decision regardless of trigger
+    # type; structured_report only for outcome=INCIDENT. Both null on every
+    # pre-this-phase row, WATCH-with-no-structured-report, and NO_INCIDENT/
+    # ABSTAIN.
+    event_classification: Optional[EventClassification] = None
+    # Raw dict passthrough, same convention as evidence.py's
+    # crowd_metrics_summary/risk_state_snapshot/contradictions — a nested
+    # JSONB blob, not re-typed into its own Pydantic model at this layer.
+    structured_report: Optional[dict] = None
     abstention_reason: Optional[str]
     confidence: float
     binding_constraint: str

@@ -88,6 +88,7 @@ def _detail_to_read(db: Session, detail: IncidentDetail) -> IncidentRead:
         acknowledged_at=incident.acknowledged_at,
         acknowledged_by=incident.acknowledged_by,
         latest_recommendation=detail.latest_recommendation,
+        latest_event_classification=detail.latest_event_classification,
         # Already chronologically ordered (correlated_at.asc()) by
         # get_incident_detail (Phase 19, unchanged).
         linked_evidence=[_timeline_entry_to_read(db, link) for link in detail.linked_evidence],

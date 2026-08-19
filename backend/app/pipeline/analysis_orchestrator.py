@@ -25,6 +25,7 @@ import logging
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 
 from sqlalchemy.exc import InterfaceError, OperationalError
@@ -36,6 +37,7 @@ from app.core.config import REPO_ROOT, settings
 from app.models.analysis_session import AnalysisSession, SessionStatus
 from app.models.processing_run import ProcessingRun, ProcessingRunStatus
 from app.models.video import VideoAsset
+from app.pipeline.acute_hazard_detector import AcuteHazardDetector, AcuteHazardSignal
 from app.pipeline.bytetrack_adapter import ByteTrackAdapter
 from app.pipeline.crowd_grid import CrowdGrid
 from app.pipeline.crowd_metrics import CrowdMetrics, CrowdMetricsEngine
@@ -325,10 +327,26 @@ class AnalysisOrchestrator:
         risk_machine = RiskStateMachine()
         trigger_engine = TriggerEngine()
         crowd_grid = CrowdGrid.from_frame_dimensions(frame_width, frame_height)
+        # Acute-Hazard Trigger Phase: one fresh detector per session, same
+        # lifecycle discipline as every other stateful per-session component
+        # above.
+        acute_hazard_detector = AcuteHazardDetector(crowd_grid)
         vision_model = MiniCPMVisionModel()
         reasoner = Reasoner()
         verifier = Verifier()
         builder = EvidenceBuilder()
+
+        # Acute-Hazard Trigger Phase: a small bounded ring buffer of recent
+        # frames, so an ACUTE_HAZARD-triggered VLM request can include one
+        # genuine "before" frame (see minicpm_vlm.py's optional 3rd image).
+        # NOT consulted by RISK/FALLBACK/OPERATOR triggers — those paths are
+        # unaffected. Bounded (not unbounded growth over a long video) —
+        # holds at most ~ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS worth
+        # of frames at this video's own fps.
+        context_frame_buffer_size = max(
+            1, round(fps * settings.ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS)
+        )
+        frame_history: deque[Frame] = deque(maxlen=context_frame_buffer_size)
 
         loop_b_threads: list[threading.Thread] = []
         prev_frame: Frame | None = None
@@ -349,11 +367,22 @@ class AnalysisOrchestrator:
                 tracking_result = tracker.update(detection_result)
 
                 crowd_metrics: CrowdMetrics | None = None
+                acute_hazard_signal: AcuteHazardSignal | None = None
                 if prev_frame is not None:
                     motion_result = optical_flow.compute(prev_frame, frame)
                     elapsed_seconds = frame.timestamp_seconds - prev_frame.timestamp_seconds
                     crowd_metrics = crowd_metrics_engine.update(
                         tracking_result, motion_result, elapsed_seconds
+                    )
+                    # Acute-Hazard Trigger Phase: computed every frame,
+                    # right alongside crowd_metrics — all four of its inputs
+                    # (motion_result, crowd_metrics.core.flow, detection_result,
+                    # the two Frame objects) are already in scope here for
+                    # free, no new expensive computation added except its
+                    # own cheap scene-change diff.
+                    acute_hazard_signal = acute_hazard_detector.update(
+                        motion_result, crowd_metrics.core.flow, detection_result,
+                        prev_frame, frame,
                     )
 
                     risk_result = risk_machine.update(crowd_metrics)
@@ -384,18 +413,35 @@ class AnalysisOrchestrator:
                         )
                         db.rollback()
 
-                    trigger_decision = trigger_engine.evaluate(crowd_metrics, risk_result)
+                    trigger_decision = trigger_engine.evaluate(
+                        crowd_metrics, risk_result, acute_hazard_signal=acute_hazard_signal
+                    )
                     if trigger_decision.trigger_type != TriggerType.NONE:
+                        # Acute-Hazard Trigger Phase: the "before" frame is
+                        # only ever attached for an ACUTE_HAZARD trigger —
+                        # RISK/FALLBACK/OPERATOR pass None, unchanged from
+                        # before this phase. frame_history[0] is the OLDEST
+                        # frame currently in the bounded ring buffer, i.e.
+                        # the frame closest to ACUTE_HAZARD_CONTEXT_FRAME_
+                        # LOOKBACK_SECONDS ago.
+                        context_frame = None
+                        if (
+                            trigger_decision.trigger_type == TriggerType.ACUTE_HAZARD
+                            and len(frame_history) > 0
+                        ):
+                            context_frame = frame_history[0]
                         spawned = self._maybe_spawn_loop_b(
                             session.id, builder, vision_model, reasoner, verifier,
                             frame, crowd_metrics, risk_result, trigger_decision,
                             crowd_grid, frame_width, frame_height,
+                            acute_hazard_signal, context_frame,
                         )
                         if spawned is not None:
                             loop_b_threads.append(spawned)
 
                     prev_risk_result = risk_result
 
+                frame_history.append(frame)
                 frame_counter += 1
 
                 # Decision F/G: one shared periodic checkpoint for
@@ -437,7 +483,7 @@ class AnalysisOrchestrator:
                             if heatmap_due:
                                 heatmap_service.generate_and_persist_heatmaps(
                                     db, session.id, frame.frame_number, frame.timestamp_seconds,
-                                    crowd_metrics, frame_width, frame_height,
+                                    crowd_metrics, frame_width, frame_height, frame.image,
                                 )
                                 last_heatmap_timestamp = frame.timestamp_seconds
                     except _TRANSIENT_DB_ERRORS:
@@ -487,6 +533,8 @@ class AnalysisOrchestrator:
         crowd_grid: CrowdGrid,
         frame_width: int,
         frame_height: int,
+        acute_hazard_signal: AcuteHazardSignal | None,
+        context_frame: Frame | None,
     ) -> threading.Thread | None:
         if not self._semaphore.acquire(blocking=False):
             # Decision B: DROPPED, not queued — always logged with the
@@ -501,11 +549,23 @@ class AnalysisOrchestrator:
             )
             return None
 
-        risk_grid = compute_risk_grid(
-            crowd_metrics.core.pressure, crowd_metrics.congestion,
-            crowd_metrics.bottleneck, crowd_metrics.reverse_flow,
-        )
-        roi_bbox = select_roi(risk_grid, crowd_grid, frame_width, frame_height)
+        # Acute-Hazard Trigger Phase (decision 4, ROI selection): an
+        # ACUTE_HAZARD trigger localizes ROI to where the ANOMALY is (the
+        # acute detector's own per-cell |divergence| grid — the only
+        # per-cell-spatial signal among its four), not where crowd pressure
+        # is. select_roi is fully generic (any argmax-able grid), reused
+        # unchanged. Every other trigger type keeps the existing
+        # risk-grid-based ROI, unaffected.
+        if trigger_decision.trigger_type == TriggerType.ACUTE_HAZARD and acute_hazard_signal is not None:
+            roi_bbox = select_roi(
+                acute_hazard_signal.localization_grid, crowd_grid, frame_width, frame_height
+            )
+        else:
+            risk_grid = compute_risk_grid(
+                crowd_metrics.core.pressure, crowd_metrics.congestion,
+                crowd_metrics.bottleneck, crowd_metrics.reverse_flow,
+            )
+            roi_bbox = select_roi(risk_grid, crowd_grid, frame_width, frame_height)
         compact_metrics = CompactCrowdMetricsSummary(
             risk_score=risk_result.risk_score, risk_state=risk_result.state,
             max_density=float(crowd_metrics.core.density.grid.max()),
@@ -522,6 +582,7 @@ class AnalysisOrchestrator:
             args=(
                 session_id, builder, vision_model, reasoner, verifier,
                 frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
+                acute_hazard_signal, context_frame,
             ),
             name=f"loop-b-{session_id}-{trigger_decision.frame_number}",
             daemon=False,
@@ -542,6 +603,8 @@ class AnalysisOrchestrator:
         trigger_decision: TriggerDecision,
         roi_bbox: tuple[float, float, float, float],
         compact_metrics: CompactCrowdMetricsSummary,
+        acute_hazard_signal: AcuteHazardSignal | None,
+        context_frame: Frame | None,
     ) -> None:
         """Runs on its OWN thread, spawned by _maybe_spawn_loop_b. Decision
         C: constructs its OWN fresh DB session — never reuses Loop A's.
@@ -552,6 +615,11 @@ class AnalysisOrchestrator:
             vision_input = VisionInput(
                 representative_frame=frame, roi_crop_bbox=roi_bbox,
                 compact_metrics=compact_metrics, trigger_reason=trigger_decision.reason,
+                # Acute-Hazard Trigger Phase: context_frame is already None
+                # here for every RISK/FALLBACK/OPERATOR trigger (the caller
+                # only ever resolves a non-None context_frame for
+                # ACUTE_HAZARD — see _run_loop_a) — no extra guard needed.
+                context_frame=context_frame,
             )
             vlm_call_succeeded = True
             vision_result = None
@@ -569,6 +637,14 @@ class AnalysisOrchestrator:
                 risk_state_result=risk_result, trigger_decision=trigger_decision, roi_bbox=roi_bbox,
                 vision_result=vision_result, vlm_call_succeeded=vlm_call_succeeded,
                 predictive_projection=crowd_metrics.predictive_projection,
+                # Acute-Hazard Trigger Phase: EvidenceBuilder.build() itself
+                # only ever attaches these when trigger_decision.trigger_type
+                # == ACUTE_HAZARD (see evidence_builder.py) — safe to pass
+                # unconditionally here.
+                acute_hazard_signal=acute_hazard_signal,
+                context_frame_timestamp_seconds=(
+                    context_frame.timestamp_seconds if context_frame is not None else None
+                ),
             )
             persisted_package = evidence_service.persist_evidence_package(db, package_result)
 

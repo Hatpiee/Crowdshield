@@ -152,6 +152,17 @@ export default function HeatmapViewer({
         </div>
       </div>
 
+      {/* Heatmap Rendering Rewrite: the legend/units/timestamp/type label
+          now lives IN the image itself (burned in by heatmap_rendering.py)
+          — this caption is deliberately just the ONE piece of context that
+          image doesn't already carry: which snapshot (by playback time)
+          is currently selected, not a second copy of the legend. */}
+      {current && (
+        <p className="mb-2 font-mono text-[10px] tracking-[0.1em] text-cs-muted">
+          Showing snapshot at t={current.timestamp_seconds.toFixed(2)}s
+        </p>
+      )}
+
       {imageError ? (
         <div className="flex aspect-video items-center justify-center border border-cs-border bg-cs-bg text-sm text-cs-muted">
           {imageError}

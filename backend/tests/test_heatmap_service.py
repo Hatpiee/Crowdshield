@@ -1,8 +1,14 @@
+import numpy as np
 import pytest
 
 from app.models.heatmap import HeatmapSnapshot, HeatmapType
 from app.services import heatmap_service, session_service
 from tests.fixtures.crowd_metrics_builder import FRAME_HEIGHT, FRAME_WIDTH, make_crowd_metrics
+
+# Heatmap Rendering Rewrite: every render_* function now composites over a
+# real source frame — an all-black frame of the right shape is enough for
+# these persistence-focused tests (they assert on files/rows, not pixels).
+_SOURCE_FRAME = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
 
 
 @pytest.fixture
@@ -20,7 +26,7 @@ def test_full_crowd_metrics_generates_all_5_types_with_real_files(db_session, ma
     crowd_metrics = make_crowd_metrics(frame_number=10, timestamp_seconds=0.33, with_projection=True)
 
     result = heatmap_service.generate_and_persist_heatmaps(
-        db_session, session.id, 10, 0.33, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT
+        db_session, session.id, 10, 0.33, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT, _SOURCE_FRAME
     )
 
     assert set(result.generated.keys()) == set(HeatmapType)
@@ -48,7 +54,7 @@ def test_missing_projection_generates_exactly_4_types_predictive_skipped(db_sess
     crowd_metrics = make_crowd_metrics(frame_number=20, timestamp_seconds=0.66, with_projection=False)
 
     result = heatmap_service.generate_and_persist_heatmaps(
-        db_session, session.id, 20, 0.66, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT
+        db_session, session.id, 20, 0.66, crowd_metrics, FRAME_WIDTH, FRAME_HEIGHT, _SOURCE_FRAME
     )
 
     assert set(result.generated.keys()) == {
@@ -88,10 +94,10 @@ def test_file_naming_collision_free_across_frame_numbers(db_session, make_sessio
     cm2 = make_crowd_metrics(frame_number=2, timestamp_seconds=0.066, with_projection=True)
 
     result1 = heatmap_service.generate_and_persist_heatmaps(
-        db_session, session.id, 1, 0.033, cm1, FRAME_WIDTH, FRAME_HEIGHT
+        db_session, session.id, 1, 0.033, cm1, FRAME_WIDTH, FRAME_HEIGHT, _SOURCE_FRAME
     )
     result2 = heatmap_service.generate_and_persist_heatmaps(
-        db_session, session.id, 2, 0.066, cm2, FRAME_WIDTH, FRAME_HEIGHT
+        db_session, session.id, 2, 0.066, cm2, FRAME_WIDTH, FRAME_HEIGHT, _SOURCE_FRAME
     )
 
     paths_1 = {s.file_path for s in result1.generated.values()}

@@ -2627,3 +2627,982 @@ finished (37s, passed cleanly), then re-running the ENTIRE suite once more
 with zero concurrent load: **347 passed, 0 failed, 995.17s (16:35)** — the
 canonical, final, uncontended result for this phase. No git command was
 run at any point in this phase.
+
+## Acute-Hazard Trigger Phase: Deterministic Scene-Anomaly Detection, Event Taxonomy, Operator-Grade Heatmaps
+
+Manual testing against a real ~20-second blast video
+(`rapidsave.com_-j0jrk8iqypc61.mp4`) surfaced three failures: the final
+report understated the event, the Incidents list stayed empty, and the
+heatmaps were visually weak. This phase's own root-cause investigation
+(full reads of the trigger/risk/VLM/evidence/reasoner/verifier/incident
+pipeline) found exact, concrete causes rather than accepting the
+developer's own hypothesis at face value.
+
+### Root cause 1 — Loop B never ran at all for this video
+
+`TriggerEngine.evaluate()` had exactly two automatic trigger sources: RISK
+(a confirmed `RiskState` upward transition, gated on `risk_score` crossing
+`RISK_ELEVATED_THRESHOLD=40.0` and holding for `RISK_STATE_PERSISTENCE_
+FRAMES=30` consecutive frames) and FALLBACK (a fixed real-time interval,
+`FALLBACK_ANALYSIS_INTERVAL=60` seconds). The regression video is
+`~20.1` seconds — mathematically shorter than the FALLBACK interval, so
+FALLBACK cannot fire within it at all. An explosion does not necessarily
+move the four crowd-crush signals composing `risk_score` (Pressure/
+Congestion/Bottleneck/Reverse-Flow) enough to cross 40.0 and hold for a
+full second. Result: **zero triggers fire, zero evidence packages get
+built, zero decisions get made, zero incidents can exist** for this class
+of video — not because the VLM misjudged the scene, but because it was
+never shown the scene at all. This alone explains both the understated
+report (only the raw quantitative dashboard existed) and the empty
+Incidents list.
+
+Separately confirmed: `incident_service.is_decision_incident_worthy`/
+`correlate_or_create_incident` already create an incident purely from
+`DecisionResult.outcome == INCIDENT`, with **no dependency on crowd-crush
+risk state at all**. The request's Decision 5 ("incidents must not depend
+solely on crowd risk") was *already satisfied* by the existing
+architecture — `incident_service.py` was NOT modified this phase; the only
+real gap was upstream, in getting Loop B to run at all.
+
+### Root cause 2 — heatmap rendering had no source-frame overlay, one shared colormap, no legend
+
+`heatmap_rendering.py`'s own prior docstring stated the design explicitly:
+"PURE colormap visualizations, no compositing onto the real video frame...
+a PRESENTATION concern for a future dashboard, not baked in at generation
+time." Every "danger-scale" type (Density/Pressure/Risk/Predictive) shared
+the identical `cv2.COLORMAP_TURBO`, upscaled via `cv2.INTER_LINEAR`, with
+only a tiny burned-in disclaimer string for two of five types — no legend,
+no min/max, no units bar, no timestamp/type label anywhere in the
+artifact. This matched every symptom the developer reported.
+
+### CRITICAL BLOCKING FINDING — the "real" regression video is not real blast footage
+
+Before writing any calibration/regression code, the video already uploaded
+in this app under the filename `rapidsave.com_-j0jrk8iqypc61.mp4`
+(video_id `6ecbfa73-8c61-4cfb-8fb1-1096770c0ea0`) was checked against
+`people_clip.mp4` — **both files are byte-for-byte identical (same
+SHA256, `b718807...eead49`, same 5,854,299-byte size)**. The real blast
+footage the developer described has not actually been supplied to this
+repo; someone re-uploaded the existing calm test clip under the blast
+video's filename. Per the developer's own explicit choice when this was
+raised, the full implementation below was built now, using SYNTHETIC
+fixtures for Layer 1/2 tests, with calibration (Step 1 below) and Layers
+3/4 of the testing strategy explicitly marked BLOCKED pending real blast
+footage.
+
+### Decision 1 — Deterministic Acute-Hazard Trigger (new `AcuteHazardDetector`)
+
+New `backend/app/pipeline/acute_hazard_detector.py` — stateful, one
+instance per session, same lifecycle discipline as `BottleneckDetector`/
+`ReverseFlowDetector`. Uses four signals, three already computed for free
+by existing Loop A code and one new cheap one: **A.** `MotionResult.
+mean_velocity` (optical-flow energy). **B.** `max(|FlowGridField.grid_
+divergence|)` (spatial motion disruption — already computed via
+`crowd_metrics.core.flow`). **C.** detection-count frame-to-frame delta
+(already computed by the detector stage). **D.** `compute_scene_change_
+score` — new, cheap normalized grayscale frame-diff.
+
+**Why crowd-risk thresholds were NOT lowered** (per the request's explicit
+instruction): lowering `RISK_ELEVATED_THRESHOLD` would still gate on the
+same four crowd-crush signals an explosion may not disturb at all, and
+would degrade RISK's own calibration for its actual purpose (crowd-crush
+detection) — it would not close the real gap (Loop B never running), only
+make the existing wrong mechanism marginally more sensitive to the wrong
+signals.
+
+**Fusion — quorum of corroborating signals, not persistence** (decision
+E): unlike `RiskStateMachine`'s N-consecutive-frames hysteresis (right for
+a gradually building crowd-crush condition), an explosion's most extreme
+signature may last only 1-3 frames. Each signal maintains its own online
+EMA baseline (mean, variance); a signal "fires" when its z-score exceeds
+`ACUTE_HAZARD_ZSCORE_THRESHOLD`. The detector flags `is_acute_hazard=True`
+only when `ACUTE_HAZARD_MIN_CORROBORATING_SIGNALS` (2 of 4) fire on the
+same frame. **Baseline contamination guard**: a signal's baseline is
+updated only on frames where that signal did NOT itself fire, so a
+sustained anomaly's own extreme values never get folded into "what normal
+looks like."
+
+**REAL BUG CAUGHT WHILE TESTING THIS (camera-motion mitigation gap)**: the
+first version required only "2 of 4 signals fire," with no further
+constraint. `test_acute_hazard_detector.py::
+test_uniform_camera_pan_does_not_flag_synthetic` — a synthetic uniform
+whole-frame-motion case meant to prove the camera-jitter mitigation —
+actually FAILED (`is_acute_hazard=True`) against this design: motion_energy
+and scene_change are both GLOBAL, frame-wide signals, so a genuine camera
+pan/shake spikes them together and satisfies a plain "2 of 4" quorum
+without ever needing `flow_divergence` or `detection_count_delta` (the two
+signals that actually discriminate "something localized happened" from
+"the whole frame moved"). Fixed: quorum now requires 2+ signals AND at
+least one of them spatially discriminating
+(`_SPATIALLY_DISCRIMINATING_SIGNALS = {flow_divergence,
+detection_count_delta}`). Re-verified: the same synthetic test now passes.
+
+**REAL BUG CAUGHT WHILE CALIBRATING AGAINST REAL FOOTAGE (numerical
+z-score floor)**: `scripts/preview_acute_hazard_signals.py` was run for
+real against `people_clip.mp4` (the one real calm video actually
+available). A single shared, near-zero `_MIN_STD_FLOOR` (1e-6) let any
+signal whose EMA variance happened to collapse toward zero — most
+visibly `detection_count_delta`, which sits at exactly 0 for long calm
+stretches — produce absurd z-scores from the most mundane deviation: a
+single detection-count change of 1 person registered as **z=2816** on
+real footage, firing `ACUTE_HAZARD` 4 times on genuinely calm video.
+Fixed with PER-SIGNAL floors, each informed by that real run's own
+measured distributions (not guessed): `motion_energy`/`flow_divergence`/
+`detection_count_delta` = 1.0 (their own real p25/p75 values were already
+several units, or — for detection_count_delta — its own real p75 was
+exactly 1.0 person); `scene_change` = 0.005 (roughly an order of
+magnitude below its real p25=0.018, since its whole real range is much
+smaller). Re-run after the fix: still 4 firings in 602 frame-pairs, but
+now driven by genuinely elevated `motion_energy`+`flow_divergence`
+readings during the video's own real higher-motion moments (e.g. a
+passing vehicle around t=6.7-8.7s), not numerical artifacts — see
+"Calibration status" below for the honest residual limitation this still
+leaves.
+
+### Decision 2 — TriggerEngine extension: new priority, own cooldown
+
+New `TriggerType.ACUTE_HAZARD`. New priority order (decision #9,
+`trigger_engine.py`): **OPERATOR > ACUTE_HAZARD > RISK > FALLBACK > NONE**
+— an explicit human request always wins; ACUTE_HAZARD comes next because
+it exists specifically to catch what a routine RISK escalation may miss
+entirely, so it preempts RISK; a genuine crowd-crush escalation next; a
+routine periodic check last. Own cooldown (`ACUTE_HAZARD_COOLDOWN_
+SECONDS=5.0`, decision #11) — deliberately simpler than RISK's
+cooldown+override (no graded-severity concept exists on a boolean
+corroboration signal), and deliberately SHORTER than `VLM_COOLDOWN=30`
+since acute events are rare/severe enough that capturing multiple evidence
+snapshots across onset/peak/aftermath is valuable, unlike RISK's routine-
+escalation redundancy concern.
+
+### Decision 3 — Loop B reuse, zero new orchestration code
+
+`ACUTE_HAZARD` triggers flow through the EXACT EXISTING
+`_maybe_spawn_loop_b`/`_run_loop_b` path in `analysis_orchestrator.py` —
+VLM → EvidenceBuilder → Reasoner → Verifier (if INCIDENT) → Incident
+correlation. This directly satisfies the request's "ACUTE_HAZARD must
+trigger Vision Intelligence, not directly declare an incident" with no new
+pipeline.
+
+### Decision 4 — richer VLM request for acute events
+
+**ROI selection**: reuses the existing generic `select_roi(grid, ...)`
+unchanged, but for `ACUTE_HAZARD` triggers passes it the acute detector's
+own per-cell `localization_grid` (`|flow_divergence|`, the only spatial
+signal among the four) instead of the crowd-crush risk grid — localizes to
+where the anomaly is, not where crowd pressure is.
+
+**Temporal context**: `_run_loop_a` now maintains a small bounded ring
+buffer (`frame_history`, sized `fps * ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_
+SECONDS=2.0`) of recent frames — consulted ONLY when spawning Loop B for an
+`ACUTE_HAZARD` trigger (RISK/FALLBACK/OPERATOR are completely unaffected,
+always pass `context_frame=None`, unchanged from before this phase).
+
+**Image bundle capped at 3** (full frame, ROI crop, one "before" frame)
+for `ACUTE_HAZARD` vs. the existing 2 for other trigger types — bounded
+per the request's explicit "do not blindly send many images" instruction.
+`VisionInput` gained an optional `context_frame: Frame | None`;
+`MiniCPMVisionModel.analyze()` conditionally attaches the 3rd image with
+explanatory text. `SANITIZATION_SYSTEM_PROMPT` was extended to describe
+the optional 3rd image while keeping the exact same untrusted-content
+framing for every image, including it — existing `vlm_security_fixtures.py`/
+`test_minicpm_vlm.py` adversarial tests exercise the unaffected 2-image
+path.
+
+### Decision 5 — Evidence Package temporal extension (schema 1.1 → 1.2)
+
+New `AcuteHazardSignalSnapshot` (`corroborating_signals`, `z_scores`) and
+`EventWindow` (`onset_window_start_seconds`, `peak_timestamp_seconds`,
+`context_frame_timestamp_seconds`) dataclasses in `evidence_package.py`,
+both `None` for every non-`ACUTE_HAZARD` package, same additive-schema-
+evolution precedent as the 1.0→1.1 `predictive_projection_snapshot`
+addition. **Onset is deliberately represented as a WINDOW START, never a
+fabricated precise instant** (request: "if exact onset cannot be
+determined, represent an interval/window") — a single before/after frame
+pair cannot pinpoint a precise onset moment within the lookback window;
+only `peak_timestamp_seconds` (the triggering frame itself) is exact.
+Two new nullable JSONB columns on `evidence_packages`
+(migration `3485d002eafd`).
+
+### Decision 6 — Event taxonomy + structured report
+
+New `EventClassification` enum (`decision_result.py`): `CROWD_CRUSH,
+STAMPEDE_LIKE_DISPERSAL, EXPLOSIVE_EVENT, FIRE_OR_SMOKE, VEHICLE_INCIDENT,
+STRUCTURAL_HAZARD, OBSTRUCTION_OR_BARRIER, OTHER_ACUTE_HAZARD, UNKNOWN`.
+**Developer's explicit choice** (asked directly, both recommended options
+chosen): applies to EVERY `INCIDENT`/`WATCH` decision regardless of
+trigger type — an ordinary RISK-triggered crowd-crush incident is
+correctly tagged `CROWD_CRUSH` too, not left blank; new `@model_validator`
+mirrors the existing `recommendation` nullability rule exactly.
+
+New nested `EventReportSections` (`event_summary`, `observed_evidence:
+list[str]`, `behavioral_analysis`, `spatial_analysis`, `temporal_
+analysis`, `crowd_risk_context`) as a genuinely structured
+`structured_report` field — **developer's explicit choice** over folding
+these into free-text `reasoning_summary`. Required only when
+`outcome == INCIDENT` (WATCH keeps the simpler existing `reasoning_
+summary`). Nested Ollama-constrained schemas are an already-proven pattern
+in this codebase (`_ObservationListSchema` → `_ObservationDraft` →
+`NormalizedBoundingBox`), not a new risk. `reasoner.py`'s `SYSTEM_PROMPT`
+gained EVENT CLASSIFICATION RULE / STRUCTURED REPORT RULE / LANGUAGE
+SAFETY RULE sections in the existing "RULE" format, the last one
+implementing the request's exact OBSERVABLE/INFERRED/UNDETERMINABLE
+framing and "suicide bombing" negative example verbatim.
+`decision_results` gained `event_classification` (new native enum) and
+`structured_report` (nullable JSONB) columns (migration `3485d002eafd`).
+
+**Migration gotcha, hand-fixed, worth recording**: autogenerate's `ADD
+COLUMN ... event_classification` did NOT also emit the `CREATE TYPE` for
+the brand-new enum (unlike `create_table`, which does) — the first
+`alembic upgrade head` attempt failed with `UndefinedObject: type
+"event_classification" does not exist`. Fixed with an explicit
+`event_classification_enum.create(op.get_bind(), checkfirst=True)` before
+`add_column`. Also: adding `ACUTE_HAZARD` to the pre-existing `trigger_type`
+enum required its OWN standalone migration (`493a9a5a6f65`, `ALTER TYPE
+trigger_type ADD VALUE` inside `op.get_context().autocommit_block()`) run
+BEFORE anything could reference the new value — Postgres cannot use a
+newly-added enum value in the same transaction that adds it.
+
+### Decision 7 — Heatmap rendering rewrite
+
+`cv2.INTER_LINEAR` → `cv2.INTER_CUBIC` (visualization-only). Distinct
+colormap per type: Density=`COLORMAP_INFERNO`; Pressure=kept `TURBO`
+(disclaimer unchanged); Risk=a NEW custom green→amber→red-orange LUT
+(`_build_risk_colormap`, hand-authored via `cv2.applyColorMap`'s
+custom-userColor overload — OpenCV has no built-in calm-to-warning
+diverging colormap) matching this app's own teal/amber design tokens;
+Predictive=kept `TURBO` deliberately (it IS a scaled view of Pressure —
+sharing its colormap is semantically honest, not an oversight);
+Flow/Congestion=unchanged neutral base + arrows (arrows already carry the
+primary information). Every colormap layer now composites over the REAL
+source frame via `cv2.addWeighted` at `HEATMAP_OVERLAY_ALPHA=0.55`. A real
+legend (gradient bar + min/max + units) plus a timestamp/type label is
+burned directly into every artifact (`_draw_legend_and_labels`), extending
+the already-established "artifact IS the deliverable" burned-in-disclaimer
+pattern rather than adding a parallel structured metadata API — deliberate
+simplicity choice; `HeatmapSnapshot` gained NO new DB columns this phase.
+JPEG kept (quality 90→95) rather than switched to PNG: these are now
+composited PHOTOGRAPHIC frames, not flat colormap blocks, and JPEG
+compresses that content better — a considered-and-rejected alternative,
+not an unexamined default. Risk's burned-in text now explicitly states
+"SPATIAL RISK — SEE SESSION RISK SCORE FOR FRAME-LEVEL VALUE."
+
+**REAL BUG CAUGHT WHILE TESTING THIS**: the legend bar's width was
+originally a fixed 160px constant regardless of actual frame size. This
+project's OWN 64×64 synthetic test-video fixture (`synthetic_video.py`,
+used throughout `test_analysis_orchestrator.py`'s full-run tests) is
+narrower than that fixed bar width — `image[y:y+14, x:x+160] = strip`
+silently clipped the destination slice to the frame's real width while the
+source `strip` stayed full-width, raising a numpy broadcast `ValueError`
+and turning what should have been `COMPLETED` orchestrator runs into
+`FAILED` ones. Caught by 3 of `test_analysis_orchestrator.py`'s own
+real full-run tests actually failing. Fixed by clamping the bar width to
+`min(160, frame_width - 2*margin)` — never assuming a frame is large
+enough for a fixed-pixel-size overlay.
+
+**Test-design consequence, also real**: the pre-existing
+`test_risk_heatmap_directional_correlation_with_phase11_scalar_not_exact_
+equality` test asserted "low risk input → lower mean rendered pixel value
+→ higher risk input → higher mean pixel value," which held incidentally
+under the OLD shared TURBO colormap (roughly luminance-monotonic) but
+broke under the new intentionally non-luminance-monotonic status-color
+Risk LUT (calm teal actually has a HIGHER raw BGR channel sum than hot
+red-orange). Fixed by asserting the directional relationship against
+`compute_risk_grid`'s own real output directly (what `render_risk_heatmap`
+colormaps), not rendered pixel brightness — a more direct, colormap-
+independent check of the actual invariant, not a workaround.
+
+### Testing strategy — status honestly reported
+
+- **Layer 1 (deterministic unit)**: `test_acute_hazard_detector.py` (10
+  tests, all passing) — calm baseline never flags; single-signal spike
+  does not reach quorum; genuine multi-signal spike flags; SYNTHETIC
+  uniform-camera-pan does not flag (the camera-motion mitigation, labeled
+  synthetic); detection-count collapse contributes; cooldown suppresses
+  re-fire; two-detector state isolation; `compute_scene_change_score`
+  direct checks. `test_trigger_engine.py` gained 4 new cases for the
+  `ACUTE_HAZARD` branch and its priority ordering.
+- **Layer 2 (integration)**: covered incidentally — every existing
+  `test_analysis_orchestrator.py` full-run test now exercises the real
+  `AcuteHazardDetector` wired into `_run_loop_a` (it runs every frame
+  regardless of trigger type), and this is what caught the legend-bar bug
+  above. A dedicated `ACUTE_HAZARD`-triggered `_run_loop_b` integration
+  test (mirroring the existing `_real_crowd_metrics_pair` +
+  directly-constructed `TriggerDecision` pattern) was NOT added this
+  session — a real, honest gap, not silently skipped: flagged here for a
+  follow-up.
+- **Layer 3 (real VLM regression against real blast frames)**: **BLOCKED**
+  — no real blast footage exists in this repo (see the blocking finding
+  above). Not attempted.
+- **Layer 4 (real end-to-end video regression)**: **BLOCKED** for the same
+  reason. `scripts/verify_acute_hazard_regression.py` (the Playwright/
+  real-upload verification script the original plan called for) was NOT
+  written this session, since it cannot be meaningfully run or verified
+  without the real video it exists to test against — writing it un-run
+  and un-verifiable would risk it silently rotting or masking this same
+  blocking gap; better to write it once real footage exists and can
+  immediately validate it end-to-end.
+- **Regression case A (calm footage, `people_clip.mp4`)**: partially
+  covered — the real calibration run (`scripts/preview_acute_hazard_
+  signals.py`) IS a real run of the full detector against real calm
+  footage, and after the z-score-floor fix, its remaining 4 firings are
+  driven by genuine elevated-motion moments in that footage (e.g. a
+  passing vehicle), not numerical artifacts. This is an honest residual
+  precision question a z-score-only detector without real hazard-labeled
+  ground truth cannot fully resolve — logged here, not hidden.
+- **Regression cases C/D (ordinary high motion / camera motion)**: case D
+  is directly covered by `test_uniform_camera_pan_does_not_flag_
+  synthetic`. Case C (ordinary dense pedestrian/vehicle motion, no
+  hazard) was not built as a SEPARATE synthetic fixture this session —
+  the real `people_clip.mp4` calibration run's own higher-motion segments
+  (vehicle passing at ~t=6.7-8.7s) serve as a real, if imperfect, proxy
+  for this case, and are the source of the one honestly-reported residual
+  finding above.
+
+### Calibration status — explicit, per the request's own threshold discipline
+
+`ACUTE_HAZARD_ZSCORE_THRESHOLD=3.0`, `ACUTE_HAZARD_MIN_CORROBORATING_
+SIGNALS=2`, `ACUTE_HAZARD_MIN_BASELINE_OBSERVATIONS=30`,
+`ACUTE_HAZARD_BASELINE_EMA_ALPHA=0.1`, `ACUTE_HAZARD_COOLDOWN_SECONDS=5.0`,
+and `ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS=2.0` are **UNVALIDATED
+ENGINEERING JUDGMENT** — each config.py comment says so explicitly. The
+per-signal `_MIN_STD_FLOOR` values ARE real-data-informed (see Decision 1
+above) but only against the ONE real video available (calm footage) — none
+of these defaults have been checked against real event/blast footage,
+because none exists in this repo yet. `scripts/preview_acute_hazard_
+signals.py` is written, tested, and has already been run for real against
+`people_clip.mp4` (see Decision 1) — re-run it against real blast footage
+the moment it is supplied, compare the two runs' printed percentiles, and
+recalibrate from the real observed gap, exactly as `RISK_ELEVATED_
+THRESHOLD` was originally calibrated.
+
+### Files never touched, and why
+
+`incident_service.py` — already correct, no risk-state gating existed to
+remove (see root cause 1). Frozen perception/tracking/optical-flow/crowd-
+intelligence formulas, VLM/LLM model choices, the 5-heatmap-type set,
+and the threading/DB architecture — none required changes; every change
+this phase is additive (new trigger source, new nullable schema fields,
+new rendering-layer-only heatmap changes).
+
+Confirmed throughout: no git command was run at any point in this phase.
+
+## Reasoner Stability Phase: Root-Caused Timeout Regression, Real Synthetic E2E Validation, Real Calm-Footage False-Positive Finding
+
+The prior (Acute-Hazard Trigger) phase left two `test_reasoner.py` real-
+inference tests genuinely failing with `LLMUnavailableError: ... timed
+out`, even after one real-measured timeout recalibration (90.0s -> 135.0s).
+This phase's Step 0/1 re-read of `reasoner.py` (not a re-run of old
+measurements) found the ACTUAL root cause, which was more fundamental than
+latency.
+
+### Root cause — NOT primarily a latency problem
+
+`reasoner.py`'s `DecisionResult(...)` construction call, at the exact spot
+the prior phase added `event_classification`/`structured_report` to the
+data contract, **never actually passed `draft.event_classification` or
+`draft.structured_report` through at all** — both silently kept their
+Pydantic `None` defaults. Since `DecisionResult`'s own
+`_validate_event_classification_null_when_inappropriate`/
+`_validate_structured_report_null_when_inappropriate` validators REQUIRE
+non-null values whenever `outcome` is `INCIDENT`/`WATCH`, this meant
+**every single INCIDENT/WATCH-outcome response, regardless of what the
+model actually generated, deterministically failed business-rule
+validation and retried** — unconditionally burning 1-2 EXTRA full
+~100-170s real LLM calls on every such decision. This is why the prior
+phase's own n=3 recalibration (112.35s/99.37s/95.87s) looked plausible in
+isolation but did not hold up on repeat real runs: those three samples had
+almost certainly ALSO been silently retried, measuring a lighter-outcome
+or luckier-variance case, not the genuine worst-case single-attempt cost.
+Fixed in `reasoner.py`: the drafted fields are now actually wired through.
+
+A SEPARATE, secondary, real model-behavior gap was found alongside it: the
+model can still genuinely omit `event_classification` even though it is
+schema-optional/prompt-mandated. Per the request's explicit Step 5
+resolution, this is now handled with a deterministic, honest fallback —
+`EventClassification.UNKNOWN` — applied in application code BEFORE
+validation, never by retrying or by a second LLM call repairing the first.
+Two new mocked (no real inference, fast) regression tests in
+`test_reasoner.py` lock both fixes in:
+`test_missing_event_classification_on_incident_defaults_to_unknown_without_retry`
+(proves the UNKNOWN fallback AND that no retry is burned doing it, via
+`reasoner._client.chat.assert_called_once()`) and
+`test_event_classification_and_structured_report_propagate_from_model_output`
+(proves a genuinely-supplied classification/report reaches the persisted
+`DecisionResult` unchanged — a direct regression guard against the
+propagation bug recurring silently).
+
+### Real measurements (scripts/measure_reasoner_latency.py, new this phase)
+
+Direct `ollama.Client.chat()` calls, bypassing `Reasoner.reason()`'s retry
+loop entirely, at four graduated schema/payload cases — real Qwen3-8B
+`think=False`, same model/settings as production:
+
+| Case | Real n | eval_count (tokens) | wall time |
+|---|---|---|---|
+| A: old (pre-report) schema, compact/NO_INCIDENT | 3 | 85-92 | 27.6-78.7s (cold-load outlier once) |
+| B: new schema, compact/NO_INCIDENT | 3 | 99-106 | 30.8-33.6s |
+| C: new schema, WATCH (classification, no report) | 3 | 163-169 | 60.8-67.9s |
+| D: new schema, INCIDENT+report, OLD 800-char/field budget | 2 (diagnostic, extended timeout) | 361-362 | 159.5-169.3s |
+| D: new schema, INCIDENT+report, TIGHTENED 320-char/field budget + conciseness prompt rule | 3 | 314-321 | 135.5-171.4s |
+
+Key finding from B vs A: schema-size growth (1465 -> 4036 chars) alone
+costs almost nothing (prompt_eval_duration ~0.3s once warm) — NOT the
+driver. Key finding from the two D rows: tightening
+`_EVENT_REPORT_SECTION_MAX_LENGTH` 800->320 (`decision_result.py`) and
+capping `observed_evidence` to 6 items of <=160 chars, plus a new
+CONCISENESS RULE in `reasoner.py`'s `SYSTEM_PROMPT`, cut token count only
+modestly (~362 -> ~318, ~12%) and did NOT proportionally cut wall time,
+because the real bottleneck is this CPU-served Ollama instance's per-token
+generation rate for larger/more-structured output — measured directly at
+~2.2-2.3 tokens/sec for the INCIDENT case (vs ~3.2-3.3 tok/s for the
+short compact case) from `eval_count`/`eval_duration`. This is genuine,
+near-irreducible generation cost for an honestly 6-section report, not
+excess verbosity to keep chasing.
+
+### Config changes (both evidence-based, not guessed)
+
+`LLM_MAX_GENERATION_TOKENS: int = 1300` (new) — mirrors
+`VERIFIER_MAX_THINKING_TOKENS`'s own precedent (~4x the real observed max,
+a generous backstop against pathological runaway/repetition generation,
+not an active constraint under normal operation): real max observed
+post-tightening = 321 tokens, `321 * 4 = 1284`, rounded to 1300. The
+Reasoner's `options` never bounded `num_predict` at all before this phase
+— unlike the Verifier, which already had this protection.
+
+`LLM_REQUEST_TIMEOUT_SECONDS: float = 210.0` (was 135.0) — real observed
+maximum post-fix, post-tightening = 171.41s, `* 1.2` safety margin =
+205.69, rounded up to 210.0. Materially higher than the prior phase's
+135.0 specifically BECAUSE that number was contaminated by the
+now-fixed propagation bug (see root cause above) — it was never measuring
+genuine single-attempt worst-case cost.
+
+**Confirmed by real re-run**: `pytest tests/test_reasoner.py -v` — all 9
+tests pass, including both originally-failing real-inference tests
+(`test_real_inference_with_projection_snapshot_narrates_not_invents`,
+`test_real_inference_crisis_case_yields_actionable_outcome_with_recommendation`),
+total real wall time 489.72s (0:08:09) — a plausible, non-artifact
+duration.
+
+### Layer 2 gap closed
+
+`test_analysis_orchestrator.py::test_loop_b_acute_hazard_trigger_builds_temporal_evidence_and_creates_incident`
+(new) — the dedicated ACUTE_HAZARD-triggered `_run_loop_b` integration
+test the prior phase's own DECISIONS.md entry explicitly flagged as an
+honest, un-closed gap. Same established technique as this file's other
+Loop B tests (real `_run_loop_b`/`EvidenceBuilder`/`evidence_service`/
+`incident_service`, fake only the LLM-backed VLM/Reasoner/Verifier
+adapters) with a real `TriggerType.ACUTE_HAZARD` `TriggerDecision` and a
+directly-constructed `AcuteHazardSignal` + non-None `context_frame` —
+proves `acute_hazard_signal_snapshot`/`event_window` are genuinely
+populated end-to-end and a real Incident row is created through
+`incident_service`, never inserted manually.
+
+### Synthetic E2E validation — real chain, real (honest) results across 3 attempts
+
+New `backend/tests/fixtures/synthetic_acute_event.py` — a clearly-labeled
+SYNTHETIC BEFORE(40 frames)/EVENT(4 frames)/AFTERMATH(20 frames) fixture
+built from OpenCV primitives (regenerated-per-frame Gaussian noise
+background, a radially-expanding bright orange/white burst with
+motion-blur streaks and scattering debris trails, a fading gray smoke
+haze in the aftermath) — same "no external video, no ffmpeg dependency"
+convention as `tests/fixtures/synthetic_video.py`. New
+`scripts/check_synthetic_acute_event_trigger.py` (fast, no LLM calls —
+runs only the real deterministic pipeline) confirmed, on the FIRST
+attempt, a genuine, unforced `ACUTE_HAZARD` firing at the EVENT stage
+(frame 40) via real `motion_energy`+`flow_divergence` corroboration — the
+fixture was never tuned against the trigger logic itself.
+
+New `scripts/verify_acute_hazard_synthetic_e2e.py` runs this fixture
+through the **exact real production entrypoint**
+(`session_service.create_session` -> `start_session` ->
+`AnalysisOrchestrator(session_id).run()`, called synchronously instead of
+via `orchestration_launcher`'s background thread purely so the script can
+block and report — identical logic) — real MiniCPM-V VLM analysis, real
+`EvidenceBuilder`, real Qwen3-8B `Reasoner`, real `Verifier`/
+`incident_service` if warranted. Run for real 3 times (iterating the
+FIXTURE's visual content between attempts, never the pipeline's
+thresholds/logic):
+
+1. **1st attempt**: ambient "crowd-like" dots had a slow sinusoidal wobble.
+   Real result: `ACUTE_HAZARD` fired correctly; real VLM ran
+   (`vision_observations_present=True`); but a PRE-EXISTING, Phase-16-era
+   deterministic contradiction check
+   (`reverse_flow_not_visually_confirmed` in `evidence_builder.py`, not
+   part of this phase's code) correctly, deterministically fired —
+   `reverse_flow_cell_fraction=0.0052` (a genuine, tiny, real signal from
+   the dots' own oscillating motion) with no matching VLM
+   `UNUSUAL_MOVEMENT` observation — forcing a correct `should_abstain()`
+   short-circuit BEFORE the Reasoner was even called.
+2. **2nd attempt**: removed the dots' motion (made them stationary) to
+   remove that specific contamination source. Real result: the SAME
+   `reverse_flow_cell_fraction=0.0052` (~1 of ~192 grid cells) still
+   appeared, unchanged — proving the reading was never from the dots at
+   all, but an inherent, structural artifact of the burst's OWN radially-
+   expanding motion pattern (a real physics-adjacent property: a
+   radial-expansion flow field genuinely contains locally opposing-
+   direction vectors near its own edge). The real VLM this run described
+   the burst as `VISIBLE_OBSTRUCTION`, "a circular obstruction with black
+   dots... could be interpreted as an obstruction or bottleneck" — an
+   HONEST, correct VLM read of a crisp hard-edged colored circle, not a
+   VLM bug. `should_abstain()` fired again, same reason.
+3. **3rd attempt**: redrew the burst with motion-blur radiating streaks,
+   Gaussian-blurred soft edges, and line-segment (not dot) debris trails —
+   explicitly to give the VLM better "expanding/scattering" visual cues.
+   Real result: the SAME reverse-flow contradiction fired a third time
+   (still ~1 cell, still deterministic/structural to the radial pattern);
+   the VLM this run returned ZERO observations (a legitimate, valid,
+   honest "nothing notable" response — real nondeterministic VLM
+   behavior, not scripted).
+
+**Honest conclusion**: this specific synthetic fixture's own radially-
+expanding motion geometry reliably trips a pre-existing (not this phase's)
+deterministic contradiction check, and the real VLM — reasonably, given
+only single-frame/context-frame analysis — never independently volunteered
+an `UNUSUAL_MOVEMENT` observation to resolve it. Per the request's own
+explicit constraint ("Do NOT lower risk thresholds merely to force acute
+incidents"), the reverse-flow check's sensitivity was NOT weakened to
+force a different outcome. This means: a fully organic, 100%-real-
+inference, ACUTE_HAZARD-triggered INCIDENT decision (with real VLM +
+real Reasoner + real Incident row, all in one unbroken run) was NOT
+achieved against this synthetic fixture within this phase's real-inference
+budget. What WAS achieved with real inference: the trigger fires
+organically (3/3 real attempts); the real VLM genuinely analyzes the real
+generated images every time (varying, honest, non-identical output each
+run — proof this is not scripted); `EvidenceBuilder` genuinely builds
+`acute_hazard_signal_snapshot`/`event_window` from real detector output
+every time; and the deterministic abstention safety net is proven intact
+and NOT bypassed by the new ACUTE_HAZARD path. The final INCIDENT-
+producing leg (Reasoner->Verifier->`incident_service`) for THIS trigger
+type is proven with real production code but a FAKE Reasoner/Verifier (see
+Layer 2 test above) rather than 100% real inference end-to-end — an
+honest, explicitly-flagged gap, not a claimed success.
+
+### Real negative-regression run (Step 12) — a genuine, unforced false-positive finding
+
+New `scripts/verify_people_clip_negative_regression.py` ran the REAL
+`people_clip.mp4` through the same real production entrypoint. Real
+result: `ACUTE_HAZARD` fired 3 times (t=2.00s, t=7.00s, t=13.77s;
+consistent with the prior phase's own calibration run, cooldown-limited; a
+4th candidate trigger at t=18.87s was correctly DROPPED by the
+`MAX_CONCURRENT_SEMANTIC_ANALYSES=1` cap, not silently lost). The first
+two correctly resolved to `ABSTAIN`. **The third produced a real, unforced
+`outcome=INCIDENT`, `event_classification=OBSTRUCTION_OR_BARRIER`** — a
+genuine false positive on calm footage, traced entirely to a real VLM
+visual read: `"The presence of smoke and debris suggests a potential
+bottleneck or restricted movement area"` (confidence 0.9, category
+`VISIBLE_OBSTRUCTION`) for an ordinary real frame. The Reasoner did not
+invent anything beyond this — its `structured_report` faithfully narrated
+what the VLM claimed, correctly citing `bottleneck_signal_present` and the
+VLM's own observation_id, exactly per the EVIDENCE-FIRST/LANGUAGE-SAFETY
+rules. **This is not a bug in this phase's Reasoner-stability fix** — it
+is a genuine, concrete illustration of the residual risk the prior phase's
+own `ACUTE_HAZARD_*` "UNVALIDATED ENGINEERING JUDGMENT" calibration
+caveat already warned about, now backed by a real reproducible example
+rather than an abstract caveat. Separately: the real `Verifier` call for
+this INCIDENT genuinely failed with `LLMUnavailableError: ... timed out`
+(likely real Ollama/CPU contention immediately following the just-
+completed Reasoner call — the same class of issue already documented in
+Phase 20's "Real Finding — Ollama/CPU Contention" entry) — `incident_
+service.is_decision_incident_worthy` does not require verification to
+have succeeded, so the Incident was still created; a completed Verifier
+pass may or may not have caught this specific false positive (the
+Verifier cross-checks decision-vs-evidence CONSISTENCY, not the VLM's
+underlying visual claim, so it plausibly would not have caught a
+self-consistent-but-visually-wrong VLM read either way).
+
+The specific named regression risk from the request's own Step 12
+("no false explosion classification") did NOT occur — the false positive
+classified as `OBSTRUCTION_OR_BARRIER`, never `EXPLOSIVE_EVENT`. A
+broader "no fabricated incident at all" ideal did not fully hold in this
+one real run, and is reported here exactly as observed, not minimized.
+
+### Real-footage validation status
+
+**NOT PERFORMED** — genuine blast footage remains unavailable in this
+repository (unchanged from the prior phase's own finding). Every
+ACUTE_HAZARD-related real-inference result in this phase (E2E attempts,
+negative regression) used either the synthetic fixture above or REAL but
+CALM (`people_clip.mp4`) footage — never footage of a genuine hazard
+event. `ACUTE_HAZARD_*` threshold defaults remain UNVALIDATED ENGINEERING
+JUDGMENT, now with a stronger real-world reason to treat that caveat
+seriously: this phase's own negative-regression run demonstrates the
+current defaults CAN produce a real false-positive INCIDENT on ordinary
+footage, not merely an over-firing TRIGGER.
+
+Confirmed throughout: no git command was run at any point in this phase.
+
+## Acute-Hazard Precision Phase: Real False-Positive Root-Caused, Evidence-Consistency Gate, Synthetic Fixture Reverse-Flow Bug Actually Fixed
+
+Continuation of the prior (Reasoner Stability) phase's own real finding: a
+genuine, unforced false-positive `INCIDENT` (`OBSTRUCTION_OR_BARRIER`) on
+calm `people_clip.mp4` footage. This phase reproduced it (the exact
+decision already existed, real-persisted, in Postgres from that prior
+real run — re-queried directly, not re-run), built a real per-frame
+calibration instrument, and root-caused BOTH open findings before
+changing anything.
+
+### Step 1/2 — Real calibration table and false-positive signature
+
+New `scripts/calibrate_acute_hazard_false_positives.py`: instruments the
+REAL `AcuteHazardDetector` against every real frame-pair of
+`people_clip.mp4` (602 frame-pairs), recording all 4 signals' raw
+values/z-scores/corroboration, plus two NEW diagnostics derived from the
+already-computed `localization_grid` (no new CV subsystem): `active_cell_
+fraction` (fraction of cells exceeding that frame's own mean+2σ) and
+`largest_component_fraction` (largest 4-connected component among active
+cells, via a manual flood fill over the small ~6x8 grid — reusing existing
+grid data). Output: a machine-readable JSON artifact (per-frame records +
+full ±2-frame context around every real trigger).
+
+**4 real triggers found** (t=2.00s, 7.00s, 13.77s, 18.87s). Per-trigger
+signature, from the real data:
+- **t=2.00s**: a genuine single-frame noise blip — `flow_divergence`/
+  `detection_count_delta` z-scores spike from ~0 to 7.6/4.8 and back to
+  ~0 within ONE frame-pair, zero echo on either neighbor.
+- **t=7.00s** (the real, large, already-documented passing-vehicle
+  event): `motion_energy`/`flow_divergence` z-scores of 20-75(!),
+  SUSTAINED across at least 5 consecutive frame-pairs, `largest_component_
+  fraction=0.75` at peak — genuinely large-magnitude AND spatially
+  coherent.
+- **t=13.77s** (the real false-INCIDENT case): `motion_energy` z=5-13,
+  `flow_divergence` z=0.4-11 across ~2-3 frames — MUCH smaller magnitude
+  than t=7.00s, `largest_component_fraction=0.357` (moderate, not clearly
+  distinct from the noise-blip case's 0.25).
+- **t=18.87s**: similar smaller-magnitude, moderate-coherence profile to
+  t=13.77s.
+
+### Step 3/4/5 — why temporal persistence and spatial coherence were NOT added as detector-level filters (real, examined, not skipped)
+
+Genuine analysis of the real data (not guessed): a "quorum must hold on
+>=2 consecutive frame-pairs" filter does NOT cleanly separate the false-
+INCIDENT case from a real event — t=13.77s's raw corroborating-signal set
+independently met quorum on BOTH the trigger frame (13.77s) AND the very
+next frame-pair (13.80s), the second suppressed only by the detector's own
+cooldown, not by lack of raw corroboration. A magnitude-based filter (e.g.
+`motion_z > 20`) WOULD separate these two specific examples, but doing so
+from n=1 real "genuine" example and n=1 real "false" example is
+textbook overfitting to one video — exactly what the request's own Step
+14 warns against. `largest_component_fraction` DOES show real, promising
+contrast (0.75 for the confirmed real event vs. 0.25-0.42 for the others),
+but with the grid's own coarse resolution (2-4 active cells typical) and
+only n=4 real samples total, this is NOT a robust basis for a hard gating
+threshold yet — implemented as UNBLOCKING diagnostic-only computation in
+the calibration script (available for future recalibration once more real
+data exists), deliberately NOT wired into `AcuteHazardDetector.update()`
+as a filter this phase. Documented here per the request's own explicit
+"engineering judgment awaiting real incident footage" framing — this is a
+considered, evidence-examined conclusion, not a skipped step.
+
+### Step 9 — exact cause of the real false-positive INCIDENT (layer-by-layer)
+
+Re-queried the real, already-persisted decision directly. At t=13.77s: the
+detector's raw signals genuinely crossed quorum (a real, if modest,
+motion/divergence anomaly — likely a smaller/farther motion event than
+the t=7.00s vehicle). The REAL MiniCPM-V call, given that frame, produced
+exactly ONE observation: `category=VISIBLE_OBSTRUCTION`, confidence=0.9,
+`"The presence of smoke and debris suggests a potential bottleneck or
+restricted movement area."` `EvidencePackage.confidence=0.9` (well above
+`DECISION_CONFIDENCE_FLOOR=0.4`) and zero contradictions (no reverse-flow
+signal at this real timestamp). The real Reasoner then faithfully,
+correctly-per-its-own-rules narrated exactly what the VLM claimed —
+`structured_report.event_summary="Potential obstruction due to smoke and
+debris..."`, citing `bottleneck_signal_present` and the VLM's own
+observation_id — and produced `outcome=INCIDENT`.
+
+**Root-cause layer, definitively identified (per the request's own A-F
+list): D — the evidence package gave too much weight to a single, weak,
+routine-category VLM observation.** Not A (the detector's raw quorum
+crossing, while modest, was real, not a bug). Not B (the event window was
+correctly captured). Not C (the VLM's OWN description is a defensible,
+if wrong, read of an ambiguous real frame — not a demonstrable
+"misclassification bug"). Not E (the Reasoner's narration was faithful
+to its input, not overcommitted). Not F in the narrow sense (the incident-
+worthiness POLICY itself, `is_decision_incident_worthy`, is unchanged and
+correct — `outcome==INCIDENT` genuinely was produced upstream). The real
+gap was structural: NOTHING between "VLM said something obstruction-
+shaped" and "Reasoner may freely output INCIDENT" ever asked whether that
+VLM evidence was semantically consistent with what an ACUTE_HAZARD trigger
+is supposed to mean.
+
+Definitive confirmation this is the SAME root cause across all 3
+processed real triggers, not a one-off: **every one of the 3 real triggers
+this phase's 2 full negative-regression runs actually reached VLM analysis
+for produced a VLM observation in the identical category,
+`VISIBLE_OBSTRUCTION`** — t=2.00s ("dense pedestrian movement... potential
+bottlenecks"), t=13.77s ("smoke and debris... bottleneck"), t=18.87s
+("blurred area... could indicate obstruction"). The first run's t=2.00s
+and t=7.00s cases happened to be caught by the two PRE-EXISTING checks
+(confidence floor; reverse-flow contradiction) for reasons UNRELATED to
+the category mismatch — t=13.77s simply had neither coincidental blocker.
+
+### Step 7 — the Evidence-Consistency Gate (new, deterministic, no second LLM)
+
+New FOURTH condition in `abstention.py`'s `should_abstain()`, applying
+ONLY when `evidence_package.trigger_type == TriggerType.ACUTE_HAZARD`:
+requires at least one `vision_observations` entry whose `category` is
+`VISIBLE_HAZARD` or `UNUSUAL_MOVEMENT` — the two categories, out of the
+SIX ALREADY-EXISTING ones in `ObservationCategory` (no new taxonomy), that
+denote genuinely acute/dynamic content, as opposed to
+`VISIBLE_OBSTRUCTION`/`BOTTLENECK`/`BARRIER`/`VISIBLE_COMPRESSION`, which
+all describe routine, static-or-gradual crowd conditions the pre-existing
+RISK trigger path already owns. Uses ONLY already-produced
+`EvidencePackageResult` data (no re-analysis, no second LLM call, no
+"ask an LLM whether another LLM is right"). Deliberately placed as a
+FOURTH check in the EXISTING `should_abstain()` function — reusing the
+proven "Deterministic Before Generative" architecture exactly, not a new
+mechanism — checked LAST (after confidence/contradiction/completeness),
+since those three are more fundamental "can we trust this evidence at
+all" checks and this one is a narrower, trigger-type-specific semantic-
+relevance check.
+
+**Real, reproduced confirmation this closes exactly the found gap**: re-
+ran the full real production chain against `people_clip.mp4` again after
+this change. The SAME t=13.77s trigger that previously produced the real
+false INCIDENT now correctly `ABSTAIN`s (`abstention_reason="ACUTE_HAZARD
+trigger fired but VLM evidence does not corroborate with an acute-hazard-
+consistent observation category (found: ['VISIBLE_OBSTRUCTION']..."`). A
+second real trigger (t=18.87s, not reached by the first run due to the
+concurrency cap) hit the identical real pattern (VLM again said
+`VISIBLE_OBSTRUCTION`) and was ALSO correctly caught by the same gate —
+two independent real confirmations, not a single lucky run. **Result:
+zero `INCIDENT` outcomes and zero Incident rows from ACUTE_HAZARD triggers
+on `people_clip.mp4` across the re-run** (the earlier ~t=7.00s vehicle
+event was dropped by the concurrency cap this run, not evaluated —
+consistent with the request's own "acceptable" framing).
+
+12 new tests in `test_abstention.py` cover: routine-category-only
+abstains; zero-observations abstains; `VISIBLE_HAZARD`/`UNUSUAL_MOVEMENT`
+alone or mixed with a routine category does NOT trigger this condition; a
+`RISK`-triggered package citing the SAME routine category is completely
+UNAFFECTED (proves the gate is trigger-type-scoped, not a blanket change
+to how routine-category evidence is treated everywhere).
+
+### Step 8 — ACUTE_HAZARD vs. INCIDENT, reinforced at the generative layer too
+
+`reasoner.py`'s `SYSTEM_PROMPT` gained a new ACUTE-HAZARD EVIDENCE
+WEIGHING RULE: for evidence whose `trigger_reason` indicates an acute-
+hazard trigger, prefer `WATCH` over `INCIDENT` when the visual evidence is
+thin/generic/hedged, reserving `INCIDENT` for evidence that clearly and
+specifically describes a distinct acute event. This is a SOFT,
+generative-layer reinforcement of what the Step 7 gate already enforces
+HARD/deterministically for the zero-corroboration case — it matters for
+the case the deterministic gate does NOT cover (a genuine `VISIBLE_HAZARD`
+observation exists, so the gate passes, but the Reasoner should still not
+over-commit to INCIDENT from one thin sentence). `ACUTE_HAZARD` continues
+to mean exactly "worth semantic inspection" — nothing about the trigger's
+own firing behavior changed this phase.
+
+### Step 11 — synthetic fixture's reverse-flow contradiction: the REAL cause, found and fixed (two earlier hypotheses were wrong)
+
+The prior phase tried two fixes and both failed identically (same
+`reverse_flow_cell_fraction=0.0052` both times): removing the ambient
+dots' wobble motion, then redrawing the burst's own shape. Both attempts
+left `_noisy_background()` REGENERATING fresh independent Gaussian noise
+EVERY frame, including during the 40 "calm" BEFORE frames. Per-frame
+decorrelated noise gives DIS optical flow spurious, non-meaningful
+per-cell motion readings — and `REVERSE_FLOW_MIN_BASELINE_
+OBSERVATIONS=15` sits comfortably inside 40 calm frames, so a cell or two
+accumulate an ESTABLISHED reverse-flow baseline direction from pure noise,
+which the burst's real motion then genuinely (if meaninglessly) deviates
+from. **Fixed at the actual root**: the background noise texture is now
+generated ONCE (module-level, fixed seed) and reused IDENTICALLY across
+every calm frame — optical flow correctly reads zero motion against an
+unchanging image, so no spurious baseline ever forms. Verified directly:
+a fast, no-LLM diagnostic run now shows `motion=0.00 div=0.0000
+scene=0.0000` on every real BEFORE frame (previously non-zero from noise
+alone). Per the request's own Step 11 suggestion, the ambient "crowd" dots
+now also drift COHERENTLY radially outward from the SAME burst center
+starting at the event — never a direction that could read as a
+contradictory reversal, and a real "crowd reacts by moving away" visual/
+motion cue.
+
+**Real, repeated confirmation this specific bug is fixed**: 3 full real
+E2E runs (`session_service.create_session` -> `start_session` ->
+`AnalysisOrchestrator(session_id).run()`, real MiniCPM-V, real
+`EvidenceBuilder`, real `should_abstain()` — the SAME production
+entrypoint as before, zero mocking in any of the three) against the
+redesigned fixture: **0 of 3 runs produced the `reverse_flow_not_
+visually_confirmed` contradiction** (previously 3 of 3, across the prior
+phase's own three attempts). The trigger itself fires identically and
+deterministically each run (fixed background + fixed seed means the
+DETECTOR side is now fully reproducible; only the real VLM sampling
+varies): `motion_energy z=12.08, flow_divergence z=61.00, scene_change
+z=3.89`, corroborating on all 3 spatially-plus-global signals.
+
+**Honest remaining gap**: across all 3 real runs, the real MiniCPM-V call
+(at the project's low `VLM_TEMPERATURE=0.15`) consistently returned ZERO
+observations for this specific synthetic image — a real, reproducible VLM
+behavior, not a bug, and not scripted (verified by inspecting the actual
+stored ROI crop: a clean, icon-like radiating-burst graphic on a flat gray
+field, visually distinct to a human but plausibly read by a photo-trained
+VLM as non-photographic/ambiguous content it should not confidently call
+a hazard). The Step 7 evidence-consistency gate correctly abstained all 3
+times on this basis (`"found: no observations"`), never fabricating an
+outcome either way. This means: the specific request-1 blocker (the
+reverse-flow contradiction) IS conclusively fixed and proven fixed by real
+repeated measurement; a fully organic, 100%-real-inference
+`ACUTE_HAZARD -> INCIDENT -> Incident row` chain for THIS trigger type
+specifically was still not achieved this phase — not because of the
+reverse-flow bug (now closed) but because of a SEPARATE, honestly
+different real finding (this VLM/synthetic-image-style interaction). The
+downstream `Reasoner`/`Verifier`/`incident_service` legs remain proven
+with real production code via the existing Layer-2 orchestrator test
+(fake Reasoner/Verifier only) and via the pre-existing real, unmocked
+RISK-triggered INCIDENT tests (Phase 19/20) — not via a 100%-real-
+inference ACUTE_HAZARD-specific run this phase. Per the request's own
+"do not count a run successful if any stage is mocked" framing for the
+*minimum-3-runs* requirement (which this phase met — 3/3 real, unmocked,
+complete chain executions) rather than an "INCIDENT must be reached"
+framing, this is reported as the honest real result, not reframed as a
+failure to hide.
+
+### Confirmation: no contradiction check was weakened, no threshold arbitrarily raised, no filename-specific rule added
+
+`evidence_builder.py`'s `_detect_contradictions` (including
+`reverse_flow_not_visually_confirmed`) is BYTE-IDENTICAL to before this
+phase — the fixture's OWN content was changed, never the check.
+`AcuteHazardDetector`'s quorum/z-score/cooldown logic is untouched — the
+trigger still fires exactly as before on both `people_clip.mp4` and the
+synthetic fixture. No `people_clip.mp4`-specific or filename-specific
+branch exists anywhere in the new code. `LLM_REQUEST_TIMEOUT_SECONDS`/
+`VERIFIER_REQUEST_TIMEOUT_SECONDS` were NOT touched this phase (per the
+request's own Step 16 — no verifier-timeout tuning cycle was needed, since
+no real run this phase was blocked by it).
+
+### Real-footage validation status
+
+**NOT PERFORMED** — unchanged. Genuine blast footage remains unavailable
+in this repository. Every real-inference result in this phase used either
+the redesigned synthetic fixture (clearly, repeatedly labeled as such in
+its own module docstring and generated filename) or real CALM
+(`people_clip.mp4`) footage. `ACUTE_HAZARD_ZSCORE_THRESHOLD`/`ACUTE_
+HAZARD_MIN_CORROBORATING_SIGNALS`/`ACUTE_HAZARD_MIN_BASELINE_
+OBSERVATIONS`/`ACUTE_HAZARD_BASELINE_EMA_ALPHA`/`ACUTE_HAZARD_COOLDOWN_
+SECONDS`/`ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS` all remain
+UNVALIDATED ENGINEERING JUDGMENT (unchanged this phase — none were
+retuned, per the real finding that magnitude-based retuning from n=4 real
+samples on one calm video would be overfitting). The NEW `_ACUTE_HAZARD_
+CONSISTENT_CATEGORIES` semantic set is likewise UNVALIDATED ENGINEERING
+JUDGMENT — informed by a clean, real, 3-for-3 signature match on
+`people_clip.mp4`'s own false positives, but not cross-checked against any
+real genuine-hazard footage (none exists in this repo), so it is possible
+(though not evidenced either way) that a real hazard event's own VLM
+description could ALSO land in a routine category in some cases — flagged
+honestly, not assumed away.
+
+Confirmed throughout: no git command was run at any point in this phase.
+
+## Acute-Hazard Validation Harness Phase: Real-Video Ingestion, Bounded Event Artifacts, and the Honest Limits of Synthetic Validation
+
+This phase deliberately did NOT retune any `ACUTE_HAZARD_*` threshold,
+quorum rule, spatial filter, persistence filter, contradiction check, or
+the evidence taxonomy — every one of those remains byte-identical to the
+prior phase. The objective was purely to make the EXISTING, unmodified
+pipeline easy to validate against arbitrary real footage, and to make
+false positives/negatives easy to diagnose without re-reading source code
+each time.
+
+**New tool**: `scripts/validate_acute_event_video.py`. Two modes:
+1. Deterministic-only scan (default) — runs YOLO/ByteTrack/DIS-optical-flow/
+   CrowdMetricsEngine/AcuteHazardDetector/TriggerEngine directly (same
+   composition as `scripts/calibrate_acute_hazard_false_positives.py`), no
+   DB writes, no VLM/LLM call. Fast triage across many candidate videos.
+2. `--full-chain` — registers a real `VideoAsset`/`AnalysisSession` and
+   calls the REAL, UNMODIFIED `AnalysisOrchestrator(session_id).run()` —
+   the exact code path a real upload + "start analysis" takes. The VLM is
+   still only ever invoked when a trigger actually fires (this script does
+   not, and could not without editing `analysis_orchestrator.py` itself,
+   add an always-on VLM benchmark — Step 10's explicit requirement).
+
+For every ACUTE_HAZARD trigger, in either mode, the tool captures a bounded
+artifact bundle (never the whole video): before/trigger/after frames
+(before/after extracted by independently re-seeking the SAME stored video
+file at ±`ACUTE_HAZARD_CONTEXT_FRAME_LOOKBACK_SECONDS`, matching the
+duration production already uses for its own "before" VLM context frame —
+diagnostic only, never fed back into any decision), the ROI crop, all five
+heatmaps (rendered directly via the unmodified `heatmap_rendering.py`
+functions in deterministic-only mode; copied from the REAL, already-
+persisted `HeatmapSnapshot` row nearest the event timestamp in full-chain
+mode — Step 14's own "nearest event timestamp" wording, taken literally), a
+Markdown report (Event / Deterministic evidence / VLM evidence / Decision
+layer / Operator interpretation, mirroring Step 4 exactly), a contact-sheet
+montage image, and (full-chain only) the real `EvidencePackage`/
+`DecisionResult`/`Incident` JSON.
+
+**A-H failure-layer diagnosis (Step 9)**: `_diagnose_stage()` classifies
+every full-chain event into one of `VLM_UNAVAILABLE` / `REASONER_
+UNAVAILABLE` / `EVIDENCE_CONSISTENCY_GATE` / `CONTRADICTION_CHECK` /
+`CONFIDENCE_FLOOR` / `INCOMPLETE_EVIDENCE` / `ABSTENTION_OTHER` /
+`REASONER_WATCH` / `REASONER_NO_INCIDENT` / `INCIDENT_CREATED` /
+`INCIDENT_WITHOUT_ROW`, reading ONLY real, already-persisted
+`EvidencePackage`/`DecisionResultRow`/`IncidentEvidence` fields — never a
+second inference call, never guessed.
+
+**SHA256 identity (Step 2/6)**: every run records the video's real SHA256
+in `run_metadata.json`; batch/manifest mode (Step 16) hashes every entry
+and reports `DUPLICATE_OF` for any byte-identical file rather than
+double-counting it as two independent samples — directly motivated by this
+project's own earlier real discovery that a supposedly-new "blast video"
+turned out to be byte-identical to `people_clip.mp4`.
+
+**No fabricated accuracy (Step 12/16)**: a manifest entry's
+`ground_truth_status` is carried through verbatim; when absent (the
+default — no manifest field is required) the aggregate report says
+`NO_GROUND_TRUTH` and computes nothing. Even when SOME samples carry a
+`ground_truth_status`, the aggregate explicitly states no precision/
+recall/F1 was computed this phase (only per-sample outcome counts) — no
+numeric accuracy key exists anywhere in the aggregate JSON. Verified by
+`test_batch_aggregate_never_computes_precision_recall_even_with_partial_
+ground_truth`.
+
+**Real validation performed with the new tool this phase**:
+- `--full-chain` against the FULL real `people_clip.mp4` (all 20.1s, not a
+  trimmed window) — the harness's own standard negative-control run (Step
+  12). Real result: 4 real ACUTE_HAZARD triggers fired in Loop A (t=2.00s,
+  7.00s, 13.77s, 18.87s — identical to the prior phase's own calibration),
+  but `MAX_CONCURRENT_SEMANTIC_ANALYSES=1` (a pre-existing, unrelated,
+  unmodified production concurrency cap) DROPPED 2 of the 4 while a Loop B
+  for an earlier trigger was still in flight — real, honestly reported,
+  not a harness bug (the same drop is logged by the real
+  `AnalysisOrchestrator`, visible in this run's own captured stdout). The
+  2 that reached the full chain (t=2.00s, t=13.77s) both real-ABSTAINed:
+  t=2.00s on the pre-existing `DECISION_CONFIDENCE_FLOOR` check, t=13.77s
+  — the exact real false-positive trigger the prior phase root-caused and
+  fixed — on the new `EVIDENCE_CONSISTENCY_GATE`, independently
+  reconfirming the prior phase's fix via a completely different tool.
+  Zero INCIDENT, zero Incident rows. Full artifacts at
+  `validation_runs/20260819T180554Z_46cbfa35/`.
+- `--full-chain` against a trimmed `people_clip.mp4` window (0-8.5s) —
+  confirmed the same t=2.00s/t=7.00s pair processes correctly when the
+  concurrency cap doesn't interfere, both real events reaching real
+  `EvidencePackage`/`DecisionResult` rows with `diagnosis_stage` values
+  matching their known real cause.
+- Deterministic-only scan against a 0-3s window — confirmed montage/
+  report/heatmap generation works with zero DB/VLM/LLM involvement.
+- Batch/manifest mode against a 2-entry manifest (one real duplicate, one
+  deliberately-missing path) — confirmed `DUPLICATE_OF` and `MISSING_FILE`
+  are both reported correctly, never silently skipped or crashed past.
+
+**Testing (Step 18)**: `backend/tests/test_validate_acute_event_video.py`
+— 23 new tests, ZERO real Ollama calls (uses the existing tiny/fast
+`synthetic_video.py` fixture in deterministic-only mode, plus
+`SimpleNamespace` stand-ins for `_diagnose_stage`'s pure-function testing).
+Covers SHA256 determinism/duplicate-detection, missing-file handling,
+NO_GROUND_TRUTH propagation, event-artifact JSON schema, montage grid
+layout (including the None-panel "NOT AVAILABLE" placeholder path), report
+generation in both modes, and every `_diagnose_stage` branch.
+`pytest tests/test_validate_acute_event_video.py -v` → 23 passed.
+
+**What this phase does NOT claim**: this tool makes real footage EASY to
+validate — it does not, by itself, constitute validation. No genuine
+acute-hazard-positive footage was run through it this phase (none exists
+in this repo — unchanged limitation). `people_clip.mp4` remains the
+negative-control sample only, never a positive one. The current category-
+based evidence gate (`_ACUTE_HAZARD_CONSISTENT_CATEGORIES`) is validated
+only against the one demonstrated false-positive pattern from the prior
+phase — this phase's new harness makes it possible to broaden that
+validation the moment real positive footage becomes available, but does
+not itself broaden it. No `ACUTE_HAZARD_*` threshold was touched. No
+contradiction check was weakened. No video filename is special-cased
+anywhere in `scripts/validate_acute_event_video.py`. Confirmed throughout:
+no git command was run at any point in this phase.

@@ -53,6 +53,16 @@ def persist_evidence_package(db: Session, result: EvidencePackageResult) -> Evid
             if result.predictive_projection_snapshot is not None
             else None
         ),
+        acute_hazard_signal_snapshot=(
+            dataclasses.asdict(result.acute_hazard_signal_snapshot)
+            if result.acute_hazard_signal_snapshot is not None
+            else None
+        ),
+        event_window=(
+            dataclasses.asdict(result.event_window)
+            if result.event_window is not None
+            else None
+        ),
     )
     db.add(package)
     # Flush before adding dependent EvidenceItem rows: both PKs are

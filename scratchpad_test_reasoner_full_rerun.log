@@ -1,0 +1,24 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.6.0 -- C:\Dev\Crowdshield\backend\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Dev\Crowdshield\backend
+plugins: anyio-4.14.2
+collecting ... collected 9 items
+
+tests/test_reasoner.py::test_abstention_short_circuit_never_calls_llm PASSED [ 11%]
+tests/test_reasoner.py::test_schema_field_order_evidence_cited_before_outcome PASSED [ 22%]
+tests/test_reasoner.py::test_missing_event_classification_on_incident_defaults_to_unknown_without_retry PASSED [ 33%]
+tests/test_reasoner.py::test_event_classification_and_structured_report_propagate_from_model_output PASSED [ 44%]
+tests/test_reasoner.py::test_llm_unavailable_raises_not_silent_fabrication PASSED [ 55%]
+tests/test_reasoner.py::test_real_inference_clean_case_produces_well_formed_decision PASSED [ 66%]
+tests/test_reasoner.py::test_real_inference_with_projection_snapshot_narrates_not_invents PASSED [ 77%]
+tests/test_reasoner.py::test_real_inference_without_projection_snapshot_narrative_is_null PASSED [ 88%]
+tests/test_reasoner.py::test_real_inference_crisis_case_yields_actionable_outcome_with_recommendation PASSED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Dev\Crowdshield\backend\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================== 9 passed, 1 warning in 489.72s (0:08:09) ===================

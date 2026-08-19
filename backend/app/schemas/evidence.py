@@ -41,6 +41,12 @@ class EvidencePackageRead(BaseModel):
     # trend narrative), not new computation, just newly surfaced.
     vision_observations_present: bool
     predictive_projection_snapshot: Optional[dict]
+    # Acute-Hazard Trigger Phase: both null for every RISK/FALLBACK/OPERATOR
+    # package and every pre-this-phase row — populated only for a package
+    # built from an ACUTE_HAZARD trigger. See evidence_package.py's
+    # AcuteHazardSignalSnapshot/EventWindow for the JSON shape.
+    acute_hazard_signal_snapshot: Optional[dict]
+    event_window: Optional[dict]
     confidence: float
     binding_constraint: str
     complete: bool

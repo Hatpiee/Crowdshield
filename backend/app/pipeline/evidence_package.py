@@ -41,7 +41,36 @@ from app.pipeline.vision_observation import (
     VisionObservation,
 )
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
+
+
+@dataclass
+class AcuteHazardSignalSnapshot:
+    """Acute-Hazard Trigger Phase — compact, narration-safe snapshot of WHY
+    an ACUTE_HAZARD trigger fired. Deliberately NOT the full
+    `AcuteHazardSignal` (which carries a numpy localization grid, unsuitable
+    for JSONB/narration) — same "compact summary, never the raw internal
+    object" discipline as `CompactCrowdMetricsSummary`. None for every
+    RISK/FALLBACK/OPERATOR package, unconditionally."""
+
+    corroborating_signals: list[str]
+    z_scores: dict[str, float]
+
+
+@dataclass
+class EventWindow:
+    """Acute-Hazard Trigger Phase — baseline/onset/peak/aftermath timing for
+    an ACUTE_HAZARD package, per the request's explicit "if exact onset
+    cannot be determined, represent an interval/window" instruction. A
+    single before/after frame pair cannot pinpoint a precise onset instant
+    within the lookback window, so `onset_window_start_seconds` is
+    genuinely represented as the START of an interval, not a fabricated
+    exact moment — `peak_timestamp_seconds` (the triggering frame itself)
+    is the one value here that IS exact."""
+
+    onset_window_start_seconds: float
+    peak_timestamp_seconds: float
+    context_frame_timestamp_seconds: Optional[float] = None
 
 
 @dataclass
@@ -114,3 +143,10 @@ class EvidencePackageResult:
     # never fabricated), or on any "1.0"-era package built before this field
     # existed.
     predictive_projection_snapshot: Optional[PredictiveProjectionSnapshot] = None
+    # Acute-Hazard Trigger Phase (schema 1.2): both None for every
+    # RISK/FALLBACK/OPERATOR package (unconditionally) and for every
+    # pre-1.2-era persisted row — populated only when trigger_type ==
+    # ACUTE_HAZARD. Same additive-schema-evolution discipline as Phase 17's
+    # predictive_projection_snapshot addition (1.0 -> 1.1).
+    acute_hazard_signal_snapshot: Optional[AcuteHazardSignalSnapshot] = None
+    event_window: Optional[EventWindow] = None

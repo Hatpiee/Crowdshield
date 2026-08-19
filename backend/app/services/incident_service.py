@@ -232,6 +232,11 @@ class IncidentDetail:
     linked_evidence: list[IncidentEvidence] = field(default_factory=list)
     operator_actions: list[OperatorAction] = field(default_factory=list)
     latest_recommendation: str | None = None
+    # Acute-Hazard Trigger Phase: same "latest linked decision" derivation
+    # as latest_recommendation above — lets the incident LIST show why an
+    # incident exists (e.g. EXPLOSIVE_EVENT vs CROWD_CRUSH) without opening
+    # the full drill-down.
+    latest_event_classification: str | None = None
 
 
 def get_incident_detail(db: Session, incident_id: uuid.UUID) -> IncidentDetail | None:
@@ -253,15 +258,19 @@ def get_incident_detail(db: Session, incident_id: uuid.UUID) -> IncidentDetail |
     )
 
     latest_recommendation = None
+    latest_event_classification = None
     if linked_evidence:
         latest_link = max(linked_evidence, key=lambda link: link.correlated_at)
         latest_decision = db.get(DecisionResultRow, latest_link.decision_result_id)
         if latest_decision is not None and latest_decision.recommendation is not None:
             latest_recommendation = latest_decision.recommendation.value
+        if latest_decision is not None and latest_decision.event_classification is not None:
+            latest_event_classification = latest_decision.event_classification.value
 
     return IncidentDetail(
         incident=incident,
         linked_evidence=linked_evidence,
         operator_actions=operator_actions,
         latest_recommendation=latest_recommendation,
+        latest_event_classification=latest_event_classification,
     )
