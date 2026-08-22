@@ -59,6 +59,11 @@ export default function HeatmapViewer({
   const [imageResult, setImageResult] = useState<
     { id: string; src: string } | { id: string; error: string } | null
   >(null);
+  // Final Intelligence phase (Phase F, "zoom/pan where appropriate"): a
+  // minimal click-to-fullscreen lightbox — the rendering itself (legend,
+  // overlay, colormap) is untouched; this only changes how large the
+  // ALREADY-RENDERED image can be viewed.
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Resolution 2: fetch the FULL heatmap list (all 5 types) ONCE, then
   // re-fetch on the SAME live-polling cadence/lifecycle as every other
@@ -168,23 +173,49 @@ export default function HeatmapViewer({
           {imageError}
         </div>
       ) : !current || !imageSrc ? (
-        <div className="flex aspect-video items-center justify-center border border-cs-border bg-cs-bg font-mono text-xs tracking-[0.15em] text-cs-muted uppercase">
-          Not yet available
+        <div className="flex aspect-video flex-col items-center justify-center gap-1 border border-cs-border bg-cs-bg text-center">
+          <p className="font-mono text-xs tracking-[0.15em] text-cs-muted uppercase">Not yet available</p>
+          <p className="max-w-xs text-xs text-cs-muted">
+            {selectedType === "PREDICTIVE"
+              ? "This heatmap is unavailable because the predictive pressure trend has not yet accumulated enough history for this session."
+              : "No snapshot has been generated for this heatmap type at the current point in the session yet."}
+          </p>
         </div>
       ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={imageSrc}
-          alt={`${selectedType} heatmap at t=${current.timestamp_seconds.toFixed(2)}s`}
-          className="w-full border border-cs-border bg-black object-contain"
-          style={{ aspectRatio: naturalAspect ?? 16 / 9 }}
-          onLoad={(event) => {
-            const img = event.currentTarget;
-            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-              setNaturalAspect(img.naturalWidth / img.naturalHeight);
-            }
-          }}
-        />
+        <button
+          type="button"
+          onClick={() => setIsFullscreen(true)}
+          className="block w-full cursor-zoom-in border border-cs-border bg-black"
+          aria-label="Open heatmap fullscreen"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageSrc}
+            alt={`${selectedType} heatmap at t=${current.timestamp_seconds.toFixed(2)}s`}
+            className="w-full object-contain"
+            style={{ aspectRatio: naturalAspect ?? 16 / 9 }}
+            onLoad={(event) => {
+              const img = event.currentTarget;
+              if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                setNaturalAspect(img.naturalWidth / img.naturalHeight);
+              }
+            }}
+          />
+        </button>
+      )}
+
+      {isFullscreen && imageSrc && (
+        <div
+          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/90 p-6"
+          onClick={() => setIsFullscreen(false)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageSrc}
+            alt={`${selectedType} heatmap at t=${current?.timestamp_seconds.toFixed(2)}s, fullscreen`}
+            className="max-h-full max-w-full object-contain"
+          />
+        </div>
       )}
     </div>
   );

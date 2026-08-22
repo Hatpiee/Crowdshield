@@ -1,3 +1,4 @@
+import dataclasses
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,8 +21,9 @@ from app.schemas.session import (
     SessionRead,
     SessionStatusRead,
 )
+from app.schemas.session_report import SessionReportRead
 from app.pipeline.crowd_pressure import UNITS_DISCLAIMER as PRESSURE_UNITS_DISCLAIMER
-from app.services import crowd_metrics_snapshot_service, session_service
+from app.services import crowd_metrics_snapshot_service, session_report_service, session_service
 from app.services.orchestration_launcher import launch_session_processing
 from app.services.session_service import InvalidStateTransitionError, VideoNotFoundError
 
@@ -259,3 +261,28 @@ def get_crowd_metrics_timeseries(
         items=[CrowdMetricsSnapshotRead.model_validate(row) for row in snapshots],
     )
     return success_envelope(timeseries_read.model_dump(mode="json"))
+
+
+@router.get("/{session_id}/report")
+def get_session_report(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Final Intelligence phase: a single, coherent, deterministic
+    # aggregation of session + risk + evidence + decisions + incidents —
+    # see session_report_service.py's module docstring for why this makes
+    # zero new LLM/VLM calls. A session with zero investigated events or
+    # zero confirmed incidents still returns a fully-populated report (see
+    # SessionReportResult.incidents_summary/overview_summary) — never an
+    # empty-looking payload.
+    report = session_report_service.build_session_report(db, session_id)
+    if report is None:
+        raise _not_found()
+
+    # dataclasses.asdict recursively converts the nested dataclass tree
+    # (RiskOverview, list[EventSummary], list[TimelineEntry]) into plain
+    # dicts/lists so Pydantic can validate it directly, without needing
+    # from_attributes=True on every nested *Read model.
+    report_read = SessionReportRead.model_validate(dataclasses.asdict(report))
+    return success_envelope(report_read.model_dump(mode="json"))

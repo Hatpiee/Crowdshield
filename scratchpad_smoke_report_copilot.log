@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<string>", line 18, in <module>
+AttributeError: type object 'SessionCopilot' has no attribute 'suggested_questions'
+overview_summary: Risk is currently NORMAL (19.2/100) and has been rising (Δ+14.6 over the last 4.0s), driven primarily by reverse_flow, bottleneck. 3 event(s) were investigated during this session; 0 were confirmed as incidents.
+incidents_summary: No event met the evidence threshold required for incident escalation. 3 event(s) were investigated (3 ABSTAINED).
+behavioral_analysis: [t=2.00s] (ABSTAINED) Abstained without LLM invocation: confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400 [t=7.00s] (ABSTAINED) Abstained without LLM invocation: evidence is materially i
+risk_overview: RiskOverview(current_state='NORMAL', current_score=19.16248767159412, trend='RISING', trend_delta=14.62880809319733, trend_window_seconds=3.9999999999999982, primary_contributors=['reverse_flow', 'bottleneck'], latest_snapshot_timestamp=19.966666666666665, snapshot_count=20)
+event statuses: [('ABSTAINED', 'Abstained without LLM invocation: confidence=0.400 is at or '), ('ABSTAINED', 'Abstained without LLM invocation: evidence is materially inc'), ('ABSTAINED', 'Abstained without LLM invocation: evidence is materially inc')]

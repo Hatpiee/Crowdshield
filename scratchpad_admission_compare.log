@@ -1,0 +1,506 @@
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=ACUTE_HAZARD@13.77s session=67290b82-d6fe-4360-bd5e-cb3070aaeb89, waited=47.03s so far) to admit a newer one (label=ACUTE_HAZARD@18.87s session=67290b82-d6fe-4360-bd5e-cb3070aaeb89)
+SemanticAdmissionQueue: dropped STALE task (label=ACUTE_HAZARD@18.87s session=67290b82-d6fe-4360-bd5e-cb3070aaeb89, waited=149.56s > staleness_seconds=60.00s) — not executed
+SemanticAdmissionQueue: dropped STALE task (label=OPERATOR@15.03s session=67290b82-d6fe-4360-bd5e-cb3070aaeb89, waited=186.97s > staleness_seconds=60.00s) — not executed
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=OPERATOR@7.03s session=14575b9b-cf93-4ed9-92a1-be9804fb8ec3, waited=68.33s so far) to admit a newer one (label=OPERATOR@14.03s session=14575b9b-cf93-4ed9-92a1-be9804fb8ec3)
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=ACUTE_HAZARD@13.77s session=14575b9b-cf93-4ed9-92a1-be9804fb8ec3, waited=80.05s so far) to admit a newer one (label=ACUTE_HAZARD@18.87s session=14575b9b-cf93-4ed9-92a1-be9804fb8ec3)
+SemanticAdmissionQueue: dropped STALE task (label=OPERATOR@14.03s session=14575b9b-cf93-4ed9-92a1-be9804fb8ec3, waited=150.70s > staleness_seconds=60.00s) — not executed
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=OPERATOR@6.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=18.36s so far) to admit a newer one (label=OPERATOR@9.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4)
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=ACUTE_HAZARD@7.00s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=57.26s so far) to admit a newer one (label=OPERATOR@12.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4)
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=OPERATOR@9.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=71.17s so far) to admit a newer one (label=ACUTE_HAZARD@13.77s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4)
+SemanticAdmissionQueue: queue at capacity (2) — evicted OLDEST queued task (label=OPERATOR@12.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=45.42s so far) to admit a newer one (label=OPERATOR@15.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4)
+SemanticAdmissionQueue: dropped STALE task (label=OPERATOR@18.03s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=892.22s > staleness_seconds=60.00s) — not executed
+SemanticAdmissionQueue: dropped STALE task (label=ACUTE_HAZARD@13.77s session=d606b319-2ae2-49df-8a4a-8bdc9c2dadf4, waited=945.36s > staleness_seconds=60.00s) — not executed
+AnalysisOrchestrator Loop B: VLM unavailable: Ollama at http://localhost:11434 unavailable during analyze(): timed out
+{
+  "scenario": "ADMISSION_QUEUE_OLD_VS_NEW",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T11:39:44.882826+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0
+  },
+  "old_drop_on_cap": {
+    "LOW": {
+      "trigger_interval_seconds": 15.0,
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 120.19669010000052,
+        "loop_a_effective_fps": 5.0167770801202565,
+        "total_wall_seconds_including_semantic_join": 143.83433590000004,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.08947651428571057,
+          "p50": 0.08343620000005103,
+          "p95": 0.12410085000001339,
+          "p99": 0.17978247099947114,
+          "max": 0.2922684000004665,
+          "min": 0.053281800000149815
+        },
+        "trigger_attempts": 5,
+        "trigger_dropped_by_semaphore": 1,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 21.901429000000007,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 9.319999935542e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 6.428007000000434,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 6.789999952161452e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 27.699999800000114,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 0.00011590000030992087,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 18.866666666666667,
+            "latency_seconds": 25.538986999999906,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 18.866666666666667,
+            "latency_seconds": 7.240000013553072e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 4,
+            "mean": 20.392105700000116,
+            "p50": 23.720207999999957,
+            "p95": 27.375847880000084,
+            "p99": 27.635169416000107,
+            "max": 27.699999800000114,
+            "min": 6.428007000000434
+          },
+          "REASONER": {
+            "count": 4,
+            "mean": 8.734999983062153e-05,
+            "p50": 8.279999974547536e-05,
+            "p95": 0.00011249500016674574,
+            "p99": 0.00011521900028128584,
+            "max": 0.00011590000030992087,
+            "min": 6.789999952161452e-05
+          }
+        },
+        "failures": {
+          "attempted": 8,
+          "successful": 8,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 1,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 547.9083916083915,
+        "backend_cpu_percent_max": 871.9,
+        "backend_rss_mb_mean": 572.5819902753497,
+        "backend_rss_mb_peak": 598.84765625,
+        "ollama_cpu_percent_mean": 141.57785547785548,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 755.1128259761073,
+        "ollama_rss_mb_peak": 2258.8359375,
+        "sample_count": 286
+      }
+    },
+    "MODERATE": {
+      "trigger_interval_seconds": 7.0,
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 137.3278393999999,
+        "loop_a_effective_fps": 4.390952356307154,
+        "total_wall_seconds_including_semantic_join": 458.3372906000004,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.09534210099671031,
+          "p50": 0.09213534999980766,
+          "p95": 0.13444695499943005,
+          "p99": 0.1865898359998755,
+          "max": 0.390809900000022,
+          "min": 0.05179760000009992
+        },
+        "trigger_attempts": 5,
+        "trigger_dropped_by_semaphore": 3,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 6.714665599999535,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 5.680000049324008e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 27.638584499999524,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 390.51231410000037,
+            "success": false,
+            "timed_out": false,
+            "error": "Qwen3-8B response failed validation after 3 attempts: 1 validation error for DecisionResult\n  Value error, structured_report must be null when outcome=WATCH [type=value_error, input_value={'decision_id': UUID('dc8...4043-b59b-0546a2c34fdc'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 2,
+            "mean": 17.17662504999953,
+            "p50": 17.17662504999953,
+            "p95": 26.592388554999523,
+            "p99": 27.429345310999523,
+            "max": 27.638584499999524,
+            "min": 6.714665599999535
+          },
+          "REASONER": {
+            "count": 1,
+            "mean": 5.680000049324008e-05,
+            "p50": 5.680000049324008e-05,
+            "p95": 5.680000049324008e-05,
+            "p99": 5.680000049324008e-05,
+            "max": 5.680000049324008e-05,
+            "min": 5.680000049324008e-05
+          }
+        },
+        "failures": {
+          "attempted": 4,
+          "successful": 3,
+          "failed": 1,
+          "timed_out": 0,
+          "dropped": 3,
+          "retried": 0,
+          "records": [
+            {
+              "stage": "REASONER",
+              "exception_type": "LLMResponseValidationError",
+              "elapsed_seconds": 390.51231410000037,
+              "retry_count": 0
+            }
+          ]
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 190.23162901307964,
+        "backend_cpu_percent_max": 846.9,
+        "backend_rss_mb_mean": 599.6303739967301,
+        "backend_rss_mb_peak": 616.921875,
+        "ollama_cpu_percent_mean": 193.94077956108745,
+        "ollama_cpu_percent_max": 828.1,
+        "ollama_rss_mb_mean": 1822.151826840403,
+        "ollama_rss_mb_peak": 5745.68359375,
+        "sample_count": 841
+      }
+    },
+    "HIGH": {
+      "trigger_interval_seconds": 3.0,
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 113.6484260999996,
+        "loop_a_effective_fps": 5.305836787122933,
+        "total_wall_seconds_including_semantic_join": 113.64846539999962,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.09698517973421616,
+          "p50": 0.09684919999972408,
+          "p95": 0.1312927050006692,
+          "p99": 0.18891266500009807,
+          "max": 0.2624647000002369,
+          "min": 0.050264399999832676
+        },
+        "trigger_attempts": 10,
+        "trigger_dropped_by_semaphore": 7,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 34.364231099999415,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 6.349999966914766e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 9.0,
+            "latency_seconds": 21.515813099999832,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 9.0,
+            "latency_seconds": 7.720000030531082e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 27.60559740000008,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "REASONER",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 7.350000032602111e-05,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 3,
+            "mean": 27.828547199999775,
+            "p50": 27.60559740000008,
+            "p95": 33.688367729999484,
+            "p99": 34.229058425999426,
+            "max": 34.364231099999415,
+            "min": 21.515813099999832
+          },
+          "REASONER": {
+            "count": 3,
+            "mean": 7.140000010015986e-05,
+            "p50": 7.350000032602111e-05,
+            "p95": 7.683000030738185e-05,
+            "p99": 7.712600030572503e-05,
+            "max": 7.720000030531082e-05,
+            "min": 6.349999966914766e-05
+          }
+        },
+        "failures": {
+          "attempted": 6,
+          "successful": 6,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 7,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 725.5923076923077,
+        "backend_cpu_percent_max": 906.2,
+        "backend_rss_mb_mean": 613.8106087386877,
+        "backend_rss_mb_peak": 627.83203125,
+        "ollama_cpu_percent_mean": 140.6874709976798,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 1935.5304207149072,
+        "ollama_rss_mb_peak": 5723.1171875,
+        "sample_count": 221
+      }
+    }
+  },
+  "new_bounded_admission_queue": {
+    "LOW": {
+      "trigger_interval_seconds": 15.0,
+      "total_wall_seconds": 333.7112410999998,
+      "loop_a_effective_fps": null,
+      "frame_latency": {
+        "count": 601,
+        "mean": 0.3050377816971725,
+        "p50": 0.2515865000004851,
+        "p95": 0.6134934999990946,
+        "p99": 1.0141012000003684,
+        "max": 1.2132808999995177,
+        "min": 0.12018419999913021
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 312.0129829984544,
+        "backend_cpu_percent_max": 831.2,
+        "backend_rss_mb_mean": 600.0523691074188,
+        "backend_rss_mb_peak": 681.59765625,
+        "ollama_cpu_percent_mean": 197.27289799402476,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 1617.646660264618,
+        "ollama_rss_mb_peak": 5723.83203125,
+        "sample_count": 647
+      },
+      "semantic_queue_metrics": {
+        "enqueued_total": 6,
+        "dequeued_total": 3,
+        "dropped_capacity_total": 1,
+        "dropped_stale_total": 2,
+        "completed_total": 3,
+        "failed_total": 0,
+        "active_count": 0,
+        "queue_depth": 0,
+        "queue_wait_seconds_mean": 68.80020000000005,
+        "queue_wait_seconds_max": 186.96900000000096,
+        "queue_wait_seconds_count": 5
+      },
+      "evidence_package_count": 3,
+      "decision_count": 3
+    },
+    "MODERATE": {
+      "trigger_interval_seconds": 7.0,
+      "total_wall_seconds": 258.07254960000137,
+      "loop_a_effective_fps": null,
+      "frame_latency": {
+        "count": 601,
+        "mean": 0.3483451584026637,
+        "p50": 0.2240577000011399,
+        "p95": 0.7612801999985095,
+        "p99": 1.1520123000009335,
+        "max": 11.737000400000397,
+        "min": 0.11908149999908346
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 475.8744282744283,
+        "backend_cpu_percent_max": 837.5,
+        "backend_rss_mb_mean": 656.3934673856548,
+        "backend_rss_mb_peak": 701.5546875,
+        "ollama_cpu_percent_mean": 157.80649688149688,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 2013.61243462513,
+        "ollama_rss_mb_peak": 5724.640625,
+        "sample_count": 481
+      },
+      "semantic_queue_metrics": {
+        "enqueued_total": 7,
+        "dequeued_total": 4,
+        "dropped_capacity_total": 2,
+        "dropped_stale_total": 1,
+        "completed_total": 4,
+        "failed_total": 0,
+        "active_count": 0,
+        "queue_depth": 0,
+        "queue_wait_seconds_mean": 36.802999999999884,
+        "queue_wait_seconds_max": 150.70299999999952,
+        "queue_wait_seconds_count": 5
+      },
+      "evidence_package_count": 4,
+      "decision_count": 4
+    },
+    "HIGH": {
+      "trigger_interval_seconds": 3.0,
+      "total_wall_seconds": 1567.2040068999995,
+      "loop_a_effective_fps": null,
+      "frame_latency": {
+        "count": 601,
+        "mean": 2.594497136106489,
+        "p50": 0.20991870000034396,
+        "p95": 0.6320919000008871,
+        "p99": 1.004140199998801,
+        "max": 888.8748257999996,
+        "min": 0.11177349999888975
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 575.7535911602209,
+        "backend_cpu_percent_max": 828.1,
+        "backend_rss_mb_mean": 667.6632963570441,
+        "backend_rss_mb_peak": 688.96875,
+        "ollama_cpu_percent_mean": 160.86519607843138,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 1963.0679271708684,
+        "ollama_rss_mb_peak": 5729.34765625,
+        "sample_count": 362
+      },
+      "semantic_queue_metrics": {
+        "enqueued_total": 11,
+        "dequeued_total": 5,
+        "dropped_capacity_total": 4,
+        "dropped_stale_total": 2,
+        "completed_total": 5,
+        "failed_total": 0,
+        "active_count": 0,
+        "queue_depth": 0,
+        "queue_wait_seconds_mean": 263.0645714285716,
+        "queue_wait_seconds_max": 945.3590000000004,
+        "queue_wait_seconds_count": 7
+      },
+      "evidence_package_count": 5,
+      "decision_count": 5
+    }
+  }
+}

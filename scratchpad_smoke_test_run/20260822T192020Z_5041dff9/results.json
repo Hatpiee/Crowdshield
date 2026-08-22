@@ -1,0 +1,196 @@
+{
+  "run_metadata": {
+    "run_id": "20260822T192020Z_5041dff9",
+    "sample_id": null,
+    "timestamp_utc": "2026-08-22T19:20:20.264570+00:00",
+    "source_filename": "779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "source_path": "..\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "source_sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "video_duration_seconds": 20.1,
+    "video_fps": 30.0,
+    "video_width": 576,
+    "video_height": 720,
+    "video_frame_count": 603,
+    "selected_window": {
+      "start_time": null,
+      "end_time": null,
+      "max_duration": null
+    },
+    "sample_interval": 1,
+    "save_crops": true,
+    "run_mode": "full-chain",
+    "active_models": {
+      "detector": "YOLO11nDetector",
+      "tracker": "ByteTrackAdapter",
+      "optical_flow": "DISOpticalFlowAdapter",
+      "vision_model": "MiniCPMVisionModel (only if this run is --full-chain)",
+      "reasoner": "Reasoner/Qwen3-8B (only if this run is --full-chain)",
+      "verifier": "Verifier/Qwen3-8B think=True (only if outcome=INCIDENT in --full-chain)"
+    },
+    "acute_hazard_config": {
+      "ACUTE_HAZARD_ZSCORE_THRESHOLD": 3.0,
+      "ACUTE_HAZARD_MIN_CORROBORATING_SIGNALS": 2,
+      "ACUTE_HAZARD_MIN_BASELINE_OBSERVATIONS": 30,
+      "ACUTE_HAZARD_BASELINE_EMA_ALPHA": 0.1,
+      "ACUTE_HAZARD_COOLDOWN_SECONDS": 5.0,
+      "signal_order": [
+        "motion_energy",
+        "flow_divergence",
+        "detection_count_delta",
+        "scene_change"
+      ]
+    }
+  },
+  "acute_hazard_trigger_count": 3,
+  "semantic_analyses_run": 3,
+  "outcome_counts": {
+    "INCIDENT": 0,
+    "WATCH": 0,
+    "ABSTAIN": 3,
+    "NO_INCIDENT": 0
+  },
+  "events": [
+    {
+      "event_index": 1,
+      "frame_number": 60,
+      "timestamp_seconds": 2.0,
+      "trigger_reason": "acute hazard signals corroborated: flow_divergence, detection_count_delta",
+      "corroborating_signals": [
+        "flow_divergence",
+        "detection_count_delta"
+      ],
+      "z_scores": {
+        "scene_change": 2.7215347813743387,
+        "motion_energy": 0.9217374490631494,
+        "flow_divergence": 7.564577269229688,
+        "detection_count_delta": 4.821158915995747
+      },
+      "raw_values": {},
+      "spatial_active_cell_fraction": null,
+      "spatial_largest_component_fraction": null,
+      "roi_bbox": [
+        493.7142857142858,
+        160.0,
+        576.0,
+        280.0
+      ],
+      "heatmap_types_available": [
+        "DENSITY",
+        "PRESSURE",
+        "FLOW_CONGESTION",
+        "RISK",
+        "PREDICTIVE"
+      ],
+      "before_frame_available": true,
+      "after_frame_available": true,
+      "vlm_call_succeeded": false,
+      "vision_observation_categories": [],
+      "evidence_complete": false,
+      "evidence_missing": [
+        "vision_observations"
+      ],
+      "contradiction_types": [],
+      "decision_outcome": "ABSTAIN",
+      "abstention_reason": "confidence=0.400 is at or below DECISION_CONFIDENCE_FLOOR=0.400",
+      "event_classification": null,
+      "incident_created": false,
+      "diagnosis_stage": "VLM_UNAVAILABLE",
+      "diagnosis_explanation": "The VLM call itself failed/was unavailable for this trigger \u2014 EvidencePackage.vision_observations_present=False, missing_evidence includes 'vision_observations'. No semantic interpretation occurred; this is an availability issue, not a detector or evidence-quality issue."
+    },
+    {
+      "event_index": 2,
+      "frame_number": 210,
+      "timestamp_seconds": 7.0,
+      "trigger_reason": "acute hazard signals corroborated: motion_energy, flow_divergence, scene_change",
+      "corroborating_signals": [
+        "motion_energy",
+        "flow_divergence",
+        "scene_change"
+      ],
+      "z_scores": {
+        "scene_change": 9.679376114419716,
+        "motion_energy": 64.99249200242109,
+        "flow_divergence": 75.54934402559128,
+        "detection_count_delta": -0.43036167841885853
+      },
+      "raw_values": {},
+      "spatial_active_cell_fraction": null,
+      "spatial_largest_component_fraction": null,
+      "roi_bbox": [
+        411.42857142857144,
+        440.0,
+        534.8571428571429,
+        560.0
+      ],
+      "heatmap_types_available": [
+        "DENSITY",
+        "PRESSURE",
+        "FLOW_CONGESTION",
+        "RISK",
+        "PREDICTIVE"
+      ],
+      "before_frame_available": true,
+      "after_frame_available": true,
+      "vlm_call_succeeded": false,
+      "vision_observation_categories": [],
+      "evidence_complete": false,
+      "evidence_missing": [
+        "vision_observations"
+      ],
+      "contradiction_types": [],
+      "decision_outcome": "ABSTAIN",
+      "abstention_reason": "evidence is materially incomplete: missing=['vision_observations']",
+      "event_classification": null,
+      "incident_created": false,
+      "diagnosis_stage": "VLM_UNAVAILABLE",
+      "diagnosis_explanation": "The VLM call itself failed/was unavailable for this trigger \u2014 EvidencePackage.vision_observations_present=False, missing_evidence includes 'vision_observations'. No semantic interpretation occurred; this is an availability issue, not a detector or evidence-quality issue."
+    },
+    {
+      "event_index": 3,
+      "frame_number": 566,
+      "timestamp_seconds": 18.866666666666667,
+      "trigger_reason": "acute hazard signals corroborated: motion_energy, flow_divergence",
+      "corroborating_signals": [
+        "motion_energy",
+        "flow_divergence"
+      ],
+      "z_scores": {
+        "scene_change": 1.030496869894865,
+        "motion_energy": 3.456574071050087,
+        "flow_divergence": 4.64039765369927,
+        "detection_count_delta": -0.4723357944482617
+      },
+      "raw_values": {},
+      "spatial_active_cell_fraction": null,
+      "spatial_largest_component_fraction": null,
+      "roi_bbox": [
+        493.7142857142858,
+        0.0,
+        576.0,
+        120.0
+      ],
+      "heatmap_types_available": [
+        "DENSITY",
+        "PRESSURE",
+        "FLOW_CONGESTION",
+        "RISK",
+        "PREDICTIVE"
+      ],
+      "before_frame_available": true,
+      "after_frame_available": false,
+      "vlm_call_succeeded": false,
+      "vision_observation_categories": [],
+      "evidence_complete": false,
+      "evidence_missing": [
+        "vision_observations"
+      ],
+      "contradiction_types": [],
+      "decision_outcome": "ABSTAIN",
+      "abstention_reason": "evidence is materially incomplete: missing=['vision_observations']",
+      "event_classification": null,
+      "incident_created": false,
+      "diagnosis_stage": "VLM_UNAVAILABLE",
+      "diagnosis_explanation": "The VLM call itself failed/was unavailable for this trigger \u2014 EvidencePackage.vision_observations_present=False, missing_evidence includes 'vision_observations'. No semantic interpretation occurred; this is an availability issue, not a detector or evidence-quality issue."
+    }
+  ]
+}

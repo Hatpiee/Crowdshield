@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
+from app.api.copilot import router as copilot_router
 from app.api.decisions import router as decisions_router
 from app.api.evidence import router as evidence_router
 from app.api.heatmaps import media_router as heatmap_media_router
@@ -63,6 +64,7 @@ app.include_router(evidence_router, prefix="/api/v1")
 app.include_router(decisions_router, prefix="/api/v1")
 app.include_router(incidents_router, prefix="/api/v1")
 app.include_router(system_router, prefix="/api/v1")
+app.include_router(copilot_router, prefix="/api/v1")
 
 
 @app.get("/health")

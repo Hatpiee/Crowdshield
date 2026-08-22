@@ -161,8 +161,14 @@ SYSTEM_PROMPT = (
     "own severity is fully explained by that number or not — e.g. "
     "'the crowd-risk score remained in the NORMAL range; independent acute-"
     "hazard evidence indicates a severe event the crowd-risk score alone "
-    "does not capture'). Leave structured_report null when outcome is "
-    "WATCH or NO_INCIDENT.\n\n"
+    "does not capture'). When outcome is WATCH, structured_report is "
+    "OPTIONAL: populate it the SAME way (all six fields, same grounding "
+    "rules) ONLY if you genuinely have enough concrete evidence to fill "
+    "every field meaningfully; otherwise leave the entire structured_report "
+    "null and rely on reasoning_summary alone — never populate only some "
+    "fields, and never pad or invent content just to satisfy all six "
+    "fields on thin evidence. Leave structured_report null when outcome is "
+    "NO_INCIDENT.\n\n"
     "CONCISENESS RULE (mandatory, applies to every field above and to "
     "reasoning_summary/recommendation_rationale): be TERSE. Each "
     "structured_report field is ONE TO TWO SHORT SENTENCES, never a "
@@ -294,6 +300,15 @@ class Reasoner:
         max_attempts = settings.LLM_MAX_RETRIES + 1
         last_error: Exception | None = None
 
+        # Final CPU Stabilization phase: see minicpm_vlm.py's identical
+        # pattern and config.py's OLLAMA_NUM_THREAD docstring.
+        chat_options: dict = {
+            "temperature": settings.LLM_TEMPERATURE,
+            "num_predict": settings.LLM_MAX_GENERATION_TOKENS,
+        }
+        if settings.OLLAMA_NUM_THREAD is not None:
+            chat_options["num_thread"] = settings.OLLAMA_NUM_THREAD
+
         for attempt in range(1, max_attempts + 1):
             start = time.perf_counter()
             try:
@@ -304,10 +319,7 @@ class Reasoner:
                         {"role": "user", "content": user_content},
                     ],
                     format=schema,
-                    options={
-                        "temperature": settings.LLM_TEMPERATURE,
-                        "num_predict": settings.LLM_MAX_GENERATION_TOKENS,
-                    },
+                    options=chat_options,
                     think=False,
                 )
             except _UNAVAILABLE_EXCEPTIONS as exc:

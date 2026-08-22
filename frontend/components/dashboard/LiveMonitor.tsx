@@ -5,7 +5,9 @@ import { useEffect, useState } from "react";
 import type { CrowdMetricsSnapshotItem } from "@/lib/types";
 import { LIVE_POLL_INTERVAL_MS, TERMINAL_SESSION_STATUSES } from "@/lib/livePolling";
 import { pickCurrentItem } from "@/lib/nearestSnapshot";
+import { RISK_STATE_COLORS } from "@/lib/riskColors";
 
+import AnalysisReport from "./AnalysisReport";
 import CrowdMetricsStatCards from "./CrowdMetricsStatCards";
 import HeatmapViewer from "./HeatmapViewer";
 import IncidentsList from "./IncidentsList";
@@ -14,21 +16,6 @@ import SystemStatusBadge from "./SystemStatusBadge";
 import VideoPlayer from "./VideoPlayer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
-
-// Reasonable color mapping using the existing palette (documented choice):
-// NORMAL stays teal ("calm/safe," matching the design tokens' own stated
-// meaning for that accent); ELEVATED/CRITICAL/INCIDENT escalate through
-// amber tones of increasing intensity, ending at the brand's own amber
-// accent for CRITICAL and a slightly redder amber for INCIDENT (this
-// dashboard shell never actually reaches INCIDENT — Phase 13's own
-// RiskState.INCIDENT is structurally unreachable — included only for
-// completeness/forward-compatibility, not because this phase exercises it).
-const RISK_STATE_COLORS: Record<string, string> = {
-  NORMAL: "#2DD4BF",
-  ELEVATED: "#F2A93B",
-  CRITICAL: "#FF6B35",
-  INCIDENT: "#FF4B35",
-};
 
 interface ProcessingRunSummary {
   status: string;
@@ -73,6 +60,12 @@ export default function LiveMonitor({
   // this one component's own subtree of consumers, so Context remains
   // premature.
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
+  // Final Intelligence phase (Phase G): "click a timeline/event/incident
+  // entry -> seek the video" — see VideoPlayer.tsx's own seekRequest prop
+  // docstring for why a nonce is needed alongside the target timestamp.
+  const [seekRequest, setSeekRequest] = useState<{ seconds: number; nonce: number } | null>(null);
+  const seekTo = (seconds: number) =>
+    setSeekRequest((prev) => ({ seconds, nonce: (prev?.nonce ?? 0) + 1 }));
 
   const isTerminal = TERMINAL_SESSION_STATUSES.has(status.status);
 
@@ -140,7 +133,12 @@ export default function LiveMonitor({
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <VideoPlayer videoId={videoId} accessToken={accessToken} onTimeUpdate={setPlaybackTime} />
+          <VideoPlayer
+            videoId={videoId}
+            accessToken={accessToken}
+            onTimeUpdate={setPlaybackTime}
+            seekRequest={seekRequest}
+          />
         </div>
 
         <div className="flex flex-col gap-4">
@@ -190,6 +188,8 @@ export default function LiveMonitor({
       </div>
 
       <CrowdMetricsStatCards current={currentMetrics} />
+
+      <AnalysisReport sessionId={sessionId} accessToken={accessToken} isTerminal={isTerminal} onSeek={seekTo} />
 
       <HeatmapViewer
         sessionId={sessionId}

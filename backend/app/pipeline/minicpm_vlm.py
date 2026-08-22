@@ -265,6 +265,14 @@ class MiniCPMVisionModel(VisionModel):
         last_error: Exception | None = None
         max_attempts = settings.VLM_MAX_RETRIES + 1
 
+        # Final CPU Stabilization phase: a verified, real field on the
+        # installed ollama client's Options model — see config.py's own
+        # OLLAMA_NUM_THREAD docstring. None (default) means unchanged
+        # behavior (no cap forwarded).
+        chat_options: dict = {"temperature": settings.VLM_TEMPERATURE}
+        if settings.OLLAMA_NUM_THREAD is not None:
+            chat_options["num_thread"] = settings.OLLAMA_NUM_THREAD
+
         for attempt in range(1, max_attempts + 1):
             start = time.perf_counter()
             try:
@@ -279,7 +287,7 @@ class MiniCPMVisionModel(VisionModel):
                         },
                     ],
                     format=schema,
-                    options={"temperature": settings.VLM_TEMPERATURE},
+                    options=chat_options,
                     think=False,
                 )
             except _UNAVAILABLE_EXCEPTIONS as exc:

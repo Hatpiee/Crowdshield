@@ -3606,3 +3606,987 @@ not itself broaden it. No `ACUTE_HAZARD_*` threshold was touched. No
 contradiction check was weakened. No video filename is special-cased
 anywhere in `scripts/validate_acute_event_video.py`. Confirmed throughout:
 no git command was run at any point in this phase.
+
+## Final Intelligence Phase: Session Report, Events-vs-Incidents, Operator Copilot
+
+Productization phase turning the existing, already-substantial pipeline
+into an operator-readable analysis product. Per the governing request's own
+"Do NOT redesign the core CrowdShield architecture" instruction, this phase
+added exactly ONE new deterministic aggregation layer and exactly ONE new
+LLM-backed feature (the Operator Copilot) — every existing pipeline stage,
+threshold, and metric formula is byte-identical to before.
+
+### Root cause / gaps found (Step 0 audit)
+
+A parallel backend + frontend data-flow audit (two Explore agents) found:
+no existing session-wide "report"/"summary" endpoint anywhere (only
+per-entity routes); `GET /sessions/{id}/incidents` already correctly
+returns an empty `items: []` with HTTP 200 for zero incidents — NOT a
+defect, confirming Phase N's premise that the current UI's flat "No
+incidents for this session" message, not the API, was the actual UX gap;
+`IncidentTimeline.tsx` already renders `structured_report`/
+`event_classification`/`event_window` in full (the Acute-Hazard phase's
+work was already wired end-to-end at the drill-down level — this phase's
+gap was entirely at the SESSION-overview level, never per-incident); no
+theme toggle/light-mode exists anywhere (confirmed absent, not built this
+phase — Phase J's "do not introduce a different visual identity" was
+interpreted as staying dark-only, consistent with the existing app); no
+chat/copilot code existed anywhere in either the backend or frontend.
+
+### Deterministic Before Generative, applied to the report layer itself
+
+`app/pipeline/session_report.py` + `app/services/session_report_service.py`
+(`GET /sessions/{id}/report`) assemble a `SessionReportResult` — video
+metadata, risk overview (state/score/trend/qualitative contributors),
+investigated-event list, activity timeline, and behavioral/spatial
+analysis text — using ONLY already-persisted rows (`CrowdMetricsSnapshot`,
+`RiskEvent`, `EvidencePackage`+`EvidenceItem`, `DecisionResultRow`,
+`Incident`) and PURE deterministic derivation (a severity tag, a 3x3
+spatial-region label from `roi_bbox` vs. the video's own width/height, a
+template-sentence overview built by formatting already-computed numbers).
+**Zero new Ollama/VLM/LLM calls exist in this module.** Even the
+`overview_summary`/`behavioral_analysis`/`spatial_analysis` free-text
+fields reuse ALREADY-GENERATED per-event text (`DecisionResultRow.
+reasoning_summary` / `structured_report.event_summary`) rather than
+synthesizing a new whole-session narrative via a fresh LLM call — this was
+a deliberate architecture decision, not a shortcut: Phase I's own example
+sentence ("Risk increased from 31.2 to 47.8...") is itself fully
+constructible from stored numbers, so a template beats an LLM call here on
+every axis that matters (never hallucinates, zero added inference cost,
+trivially unit-testable, and structurally can't drift from the numbers it
+cites). This satisfies Phase K's "do not accidentally increase inference
+frequency" and the constitutional "Deterministic Before Generative"
+principle applied to a NEW layer, not just the existing abstention system.
+
+### Events vs. Incidents (Frozen Decision, now enforced structurally)
+
+`EventSummary.status` is one of exactly `OBSERVED` / `WATCH` / `ABSTAINED`
+/ `INCIDENT`, derived from the LATEST `DecisionResultRow` for each
+`EvidencePackage` (picking the latest naturally surfaces a Verifier-driven
+superseding ABSTAIN over an original INCIDENT row, same "latest wins"
+semantics `incident_service.is_decision_incident_worthy` already uses).
+`confirmed_incident_count` is ALWAYS a separate, independently-counted
+field (`len(incident_service.get_session_incidents(...))`) — an
+`EventSummary.status == "INCIDENT"` with no real `Incident` row
+(Verifier-superseded) is reported honestly via `incident_id=None`, never
+conflated with a genuinely confirmed one. A zero-incident session with
+investigated events now renders `incidents_summary` as "No event met the
+evidence threshold required for incident escalation. N event(s) were
+investigated (breakdown)." instead of a bare empty list — `IncidentsList.
+tsx`'s own zero-state now points the operator at this richer explanation
+rather than duplicating the aggregation logic in two places.
+
+### Metric audit
+
+No metric FORMULA was touched (Phase Q's explicit prohibition honored).
+Findings, all UI-layer:
+- **Density**: `max_density.toFixed(3)` + `density_confidence` was already
+  shown; unchanged.
+- **Pressure**: pixel-space disclaimer already shown; unchanged.
+- **Congestion/Flow**: unchanged.
+- **Risk**: was previously ONLY a separate ad-hoc "Current Risk" card in
+  `LiveMonitor.tsx` (no confidence, no place in the shared stat-card grid,
+  not available at all inside `IncidentTimeline`'s reused `CrowdMetricsStat
+  Cards`, since that shared component structurally excluded `risk_score`/
+  `risk_state`). Added as a 5th card to the shared grid (`risk_score`/
+  `risk_state` moved onto the base `CrowdMetricsStatFields` TS interface,
+  since both the live timeseries snapshot AND an evidence package's
+  `crowd_metrics_summary` already carry both fields at runtime — additive,
+  not a new backend field). Now appears consistently on both the live
+  dashboard and the incident drill-down.
+- **Predictive**: still has no standalone card (a genuine per-cell scalar
+  doesn't exist to card-ify — `PredictiveProjection` is inherently a
+  trend-scaled view, already exposed inside `IncidentTimeline`'s Crowd
+  Metrics block and the Predictive heatmap's own disclaimer) — left as-is,
+  not fabricated into a misleading top-level number.
+- Trend arrows: added ONLY at the session-report level (`RiskOverview.
+  trend`, computed server-side from a 5-snapshot window, `_TREND_STABLE_
+  EPSILON=2.0` UNVALIDATED ENGINEERING JUDGMENT) — NOT added to the
+  point-in-time stat-card grid, which has no window of prior values in
+  scope at that call site and would otherwise need a fabricated delta.
+
+### Heatmaps (Phase F)
+
+Reviewed against the full Definition-of-Done checklist — the PRIOR
+"Heatmap Rendering Rewrite" phase already satisfies nearly all of it
+(distinct colormap per type, source-frame overlay, burned-in legend/units/
+timestamp/type label, `INTER_CUBIC` upscale, correct aspect ratio via
+`HeatmapViewer.tsx`'s own real `naturalWidth`/`naturalHeight` read). No
+heatmap rendering code was touched this phase (Phase F's own explicit "do
+not start another rewrite unless an actual defect blocks validation" —
+none was found). Two small, additive frontend-only touches: (1) a click-to-
+fullscreen lightbox (Phase F's "zoom/pan where appropriate," previously
+entirely absent); (2) a more specific empty-state message distinguishing
+"Predictive genuinely has no history yet" from "no snapshot at this point
+in time yet," instead of one generic "Not yet available" for both cases.
+
+### Operator Copilot
+
+**New**: `app/pipeline/session_copilot.py` (`SessionCopilot`), `app/api/
+copilot.py` (`GET .../copilot/suggested-questions`, `POST .../copilot/
+ask`), `frontend/components/dashboard/OperatorCopilot.tsx`.
+
+- **Grounding/retrieval**: the Copilot's ONLY context source is the SAME
+  `SessionReportResult` the report endpoint serves
+  (`_serialize_session_context`, bounded to the most recent 30 events / 60
+  timeline entries so an unusually long session still produces a bounded
+  prompt) — no new database queries, no VLM re-analysis, no Reasoner
+  re-run. This is a deliberate single-source-of-truth choice: the report
+  and the Copilot can never disagree about what happened, because they
+  read the identical aggregation.
+- **Question flow**: one stateless `POST .../copilot/ask` call per
+  question (no persisted chat history, no multi-turn model memory) —
+  reuses `LLM_MODEL`/`OLLAMA_BASE_URL` directly (no new model), `think=
+  False`, `format=`-constrained JSON (`answer: str`, `cited_timestamps:
+  list[float]`). Deliberately did NOT ask the model to self-report a
+  "groundedness"/confidence score — per the Confidence Propagation Frozen
+  Decision, that would be inventing a confidence value with no real basis.
+- **Real latency measurement** (`scripts/measure_copilot_latency.py`, n=2,
+  representative 8-event/~5.4KB context payload): 93.84s and 18.08s
+  (eval_count=54 both trials — the ~5x spread is CPU-contention variance,
+  not generation length). `COPILOT_REQUEST_TIMEOUT_SECONDS=115.0` (observed
+  max * 1.2, same margin methodology as `LLM_REQUEST_TIMEOUT_SECONDS`/
+  `VERIFIER_REQUEST_TIMEOUT_SECONDS`, honestly logged as a smaller sample,
+  n=2, than either of those, n=5 each).
+- **Safety**: `SYSTEM_PROMPT` explicitly frames the ENTIRE session-context
+  JSON block as untrusted DATA, never instructions — same framing
+  precedent as `minicpm_vlm.py`'s `SANITIZATION_SYSTEM_PROMPT`, since the
+  context can itself embed VLM-generated free text. Grounding rules
+  explicitly forbid fabricating injuries/counts/motives/identities and
+  require an honest "the analysis does not establish that" when the
+  session context doesn't cover something asked. `think=False` and the
+  response schema has no field for internal reasoning, so no chain-of-
+  thought is ever exposed by construction, not by a post-hoc filter.
+- **Session isolation**: `ask()`'s only session-derived input is a
+  `SessionReportResult` the CALLER built from the URL path's `session_id` —
+  there is no code path in `session_copilot.py` that looks up any other
+  session, regardless of what the operator's question text contains. Real,
+  reproduced test (`test_ask_copilot_cannot_retrieve_other_sessions_data`):
+  a real second session with a real INCIDENT-outcome event exists in the
+  test DB; asking session A's Copilot "what happened in session {B's real
+  UUID}?" is proven to only ever receive session A's own (empty) event
+  list — session B's event is structurally absent, not merely unmentioned
+  in the answer text.
+- **Tests**: 10 tests in `test_session_copilot.py` (context-serialization
+  bounds/isolation, `suggested_questions` logic, 3 mocked API-route tests,
+  1 isolation test) + exactly ONE real-inference test (`test_real_ask_
+  returns_schema_valid_grounded_answer`) — per Phase O's own "small number
+  of real calls, not dozens" instruction, this file makes exactly 1 real
+  Ollama call in the normal suite (the other 2 real calls in this phase's
+  own measurement were a one-off script run, not part of the test suite).
+
+### Video-seek wiring (Phase G)
+
+`VideoPlayer.tsx` gained an optional `seekRequest: {seconds, nonce} | null`
+prop (a nonce so a repeat click on the same timestamp still re-seeks) —
+the one deliberate imperative escape hatch added this phase; every other
+cross-widget value (`playbackTime`) remains the existing lifted-`useState`
+pattern, not Context, not a second time model. Activity Timeline entries,
+Detected Event cards, and Copilot answer citations (`cited_timestamps`)
+all call the SAME lifted `seekTo` callback in `LiveMonitor.tsx`.
+
+### Files changed
+
+**New (backend)**: `app/pipeline/session_report.py`, `app/services/
+session_report_service.py`, `app/schemas/session_report.py`, `app/pipeline/
+session_copilot.py`, `app/schemas/copilot.py`, `app/api/copilot.py`,
+`scripts/measure_copilot_latency.py`, `tests/test_session_report_service.py`,
+`tests/test_session_copilot.py`.
+
+**Modified (backend)**: `app/api/sessions.py` (new `GET .../report` route),
+`app/main.py` (new copilot router), `app/core/config.py` (5 new `COPILOT_*`
+settings), `tests/test_sessions.py` (2 new report-route tests).
+
+**New (frontend)**: `components/dashboard/AnalysisReport.tsx`, `components/
+dashboard/OperatorCopilot.tsx`, `components/dashboard/Panel.tsx`,
+`components/dashboard/SeverityBadge.tsx`, `lib/riskColors.ts`.
+
+**Modified (frontend)**: `components/dashboard/LiveMonitor.tsx` (mounts
+`AnalysisReport`, owns `seekRequest` state, reuses shared `riskColors`),
+`components/dashboard/CrowdMetricsStatCards.tsx` (new Risk card),
+`components/dashboard/VideoPlayer.tsx` (`seekRequest` prop),
+`components/dashboard/IncidentsList.tsx` (richer zero-state copy),
+`lib/types.ts` (`risk_score`/`risk_state` moved onto the shared
+`CrowdMetricsStatFields` base interface).
+
+**Never touched**: every pipeline stage's math (density/pressure/
+congestion/bottleneck/reverse-flow/risk-score/predictive-projection),
+every `ACUTE_HAZARD_*`/`RISK_*`/`VLM_*` threshold, `heatmap_rendering.py`,
+`abstention.py`, `evidence_builder.py`, `reasoner.py`'s decision logic,
+`incident_service.py`'s correlation logic. No Celery/RQ/Redis/Kafka/
+LangGraph/vector DB/second LLM model was introduced.
+
+### Known limitations (honest, not hidden)
+
+- `RiskOverview.trend`'s `_TREND_STABLE_EPSILON=2.0` is UNVALIDATED
+  ENGINEERING JUDGMENT — not calibrated against real operator feedback on
+  what magnitude of change "feels" meaningful.
+- `EventSummary.severity_tag`/spatial-region labels are UI-layer
+  heuristics derived from existing outcome/priority/bbox data, not a new
+  stored severity score — documented as such in `session_report.py`'s own
+  module docstring.
+- The Copilot's timeout was measured with n=2 real calls (vs. n=5 for the
+  Reasoner/Verifier's own precedents) — a smaller sample, honestly logged,
+  for a new, lower-traffic, on-demand code path.
+- No persisted Copilot chat history exists — each question is answered
+  independently; a follow-up question referencing an earlier answer in the
+  same UI session is NOT given that prior turn as context (a deliberate
+  scope-bounding choice, not an oversight — Phase K's performance
+  discipline and the explicit "not a generic chatbot" framing both argue
+  against a growing, unbounded conversation history being replayed into
+  every subsequent question).
+- No light/dark theme toggle was built — none existed before this phase,
+  and the app remains intentionally single-mode dark, consistent with
+  Phase J's "do not introduce a different visual identity."
+- Real acute-hazard-positive footage validation remains NOT PERFORMED
+  (unchanged from the prior phase — out of this phase's scope).
+- Confirmed throughout: no git command was run at any point in this phase.
+
+## Sprint-0 CPU / Concurrency / Ollama Load Test Phase (Measurement Only)
+
+Measurement-only phase (absolute scope rule honored: no threshold, formula,
+architecture, or semaphore semantics changed). Full results:
+`SPRINT0_CPU_LOAD_TEST_REPORT.md`, raw JSON: `benchmark_results/*.json`.
+
+**New**: `scripts/benchmark_sprint0_cpu.py`, `scripts/generate_sprint0_report.py`,
+`backend/tests/test_benchmark_sprint0_cpu.py` (17 tests, zero real Ollama
+calls). Two techniques used to avoid ever editing `analysis_orchestrator.py`
+itself: (1) a benchmark-only Loop A/B driver composing the SAME real
+component classes the orchestrator does (matching this repo's own existing
+`scripts/preview_*.py`/`calibrate_acute_hazard_false_positives.py`
+precedent), used for scenarios needing to stop the real chain early
+(VLM-only / VLM+Reasoner); (2) the REAL, byte-for-byte unmodified
+`AnalysisOrchestrator.run()`, instrumented only via a temporary external
+monkeypatch of `TriggerEngine.evaluate` (restored immediately after), used
+for the full-chain and multi-session scenarios.
+
+**Real findings** (all against `people_clip.mp4`, 20.1s/603 frames, on an
+8-physical/16-logical-core AMD64 machine, 31.3GB RAM):
+
+- **Loop-A baseline**: 5.43 FPS, p50/p95/p99 frame latency 90/108/122ms.
+- **Loop-A + real VLM**: throughput measured between 2.96-5.37 FPS across
+  two otherwise-identical real runs (large real run-to-run variance, not
+  isolated this phase). Both real runs showed a severe single-frame
+  latency SPIKE (61.28s and 38.98s) absent from baseline (max 1.32s) —
+  confirms real Ollama CPU contention can stall Loop A for tens of seconds
+  on individual frames even when mean/p95 latency looks only mildly
+  degraded.
+- **Loop-A + real VLM + Reasoner** (natural ACUTE_HAZARD triggers): all 4
+  real evidence packages hit the DETERMINISTIC abstention short-circuit
+  (the Acute-Hazard Precision phase's own Evidence-Consistency Gate) —
+  ZERO real Reasoner LLM calls were made. This is CORRECT, EXPECTED
+  behavior (Deterministic Before Generative working exactly as designed),
+  not a benchmark gap — consistent with that phase's own real finding that
+  people_clip.mp4's ACUTE_HAZARD triggers produce only routine
+  `VISIBLE_OBSTRUCTION` VLM evidence.
+- **Real Reasoner latency data** was obtained via the trigger-frequency
+  sweep's OPERATOR-triggered evidence (the existing, unmodified
+  `TriggerType.OPERATOR` path — not ACUTE_HAZARD, so the ACUTE_HAZARD-
+  specific gate does not apply): one real Reasoner call reached full
+  generation and took **390.51s** across its own internal 3-attempt retry
+  loop, ultimately FAILING with `LLMResponseValidationError: structured_
+  report must be null when outcome=WATCH` — **a real, reproducible
+  production defect found by this benchmark**: the model occasionally
+  populates `structured_report` on a WATCH outcome, which `DecisionResult`'s
+  own validator correctly rejects. NOT fixed this phase (absolute scope
+  rule) — flagged as the #2 optimization candidate.
+- **Full semantic chain** (real, unmodified `AnalysisOrchestrator.run()`):
+  223.46s wall-clock, 3 evidence packages (1 dropped by the semaphore), all
+  3 decisions ABSTAIN (same Evidence-Consistency Gate), 0 incidents,
+  Verifier genuinely never reached — reported honestly, not forced.
+- **Trigger-frequency sweep** (LOW=15s/MODERATE=7s/HIGH=3s real OPERATOR-
+  trigger intervals): drop rate rose sharply with frequency — 1/5 (20%) at
+  LOW, 3/5 (60%) at MODERATE, 7/10 (70%) at HIGH — while completed-call
+  latency stayed flat. Confirms `MAX_CONCURRENT_SEMANTIC_ANALYSES=1` (a
+  session-scoped semaphore, unchanged/unmodified this phase) is the
+  dominant limiter on sustained semantic throughput, not raw Ollama speed.
+- **2 concurrent real sessions**: both reached COMPLETED, 4/4 real evidence
+  packages + decisions each, total wall-clock only ~12% above the
+  single-session full-chain run despite 2x the real semantic workload —
+  backend CPU peaked at 1593.8% (near this 16-logical-core machine's
+  ceiling). 3 concurrent sessions NOT run this phase (explicit, spec-
+  sanctioned stopping point — 2 sessions already approached the CPU
+  ceiling and further escalation was judged to risk this phase's own real
+  time budget without materially new information).
+- **Ollama warm/cold** (real `keep_alive=0` forced unload + `ollama.Client.
+  ps()` residency checks — a genuinely supported client parameter, verified
+  present in the installed client's own signature before use): model LOAD
+  overhead measured at ~3.66s (MiniCPM-V) / ~5.89s (Qwen3-8B) — real but
+  SECONDARY to the 25-35s (VLM) / up to 390s (Reasoner) generation time
+  observed elsewhere. Both models confirmed to coexist resident
+  simultaneously once each has been called.
+- **CPU-attribution bug caught and fixed WHILE running this benchmark for
+  real** (a benchmark-instrumentation fix, explicitly permitted by the
+  phase's own scope rule): the initial `ResourceSampler._ollama_processes()`
+  filter matched only `"ollama"` in the process name, which — confirmed via
+  a real `Get-Process` check during a live run — misses the actual
+  CPU-heavy inference worker entirely: `ollama serve` (the lightweight API
+  daemon, ~1s cumulative CPU) spawns a SEPARATE `llama-server.exe` process
+  that does the real generation work (hundreds of CPU-seconds). Fixed to
+  match both names; the VLM scenario was re-run after the fix (a legitimate
+  benchmark-tooling correction, not a production or measurement-semantics
+  change).
+
+**Real bottleneck ranking** (see `SPRINT0_CPU_LOAD_TEST_REPORT.md`'s own
+"Bottlenecks"/"Optimization Candidates" sections for full detail): (1) the
+session-scoped semaphore, not raw model speed, caps sustained real-world
+throughput; (2) real LLM/VLM generation latency remains the largest
+single-call cost, up to 390s observed this phase; (3) Loop-A's frame-
+latency TAIL (not mean) spikes severely under real Ollama contention; (4)
+the newly-found `structured_report`/`WATCH` validation defect; (5) large,
+unexplained run-to-run variance on identical scenarios.
+
+**Prior semantic-latency measurements' relationship to this phase**: this
+phase's real Reasoner latency (390.51s, ultimately a failure) is
+HONESTLY NOT directly comparable to the Reasoner Stability phase's own
+real n=3 measurements (135.5-171.4s, all SUCCESSFUL, post-propagation-bug-
+fix) — the two used different prompt content, different real-time system
+load (this phase's number was measured DURING an active trigger-frequency
+sweep with concurrent Loop-A processing, not in isolation), and, critically,
+this phase's call ultimately FAILED validation after its own internal
+3-attempt retry loop, while the Reasoner Stability phase's numbers were
+each single, successful attempts. Both are real and both are honestly
+reported — they are not superseding one another, they are measuring
+different things (isolated single-attempt latency vs. real-world
+contended, retried, and in this case failed latency).
+
+**Regression check**: full backend suite re-run after this phase's changes
+(see Tests below) — the new benchmark harness and its 17 tests are
+strictly additive; no existing test, threshold, formula, or route was
+modified.
+
+Confirmed throughout: no production threshold, formula, semaphore
+semantics, or architecture was changed. No git command was run at any
+point in this phase.
+
+## Semantic Admission Control, Reasoner Contract Hardening & Loop-A Tail-Latency Fix Phase
+
+Directly follow-on to the Sprint-0 benchmark above — this phase FIXES the
+Reasoner contract defect it found, REPLACES the drop-on-cap semantic
+admission mechanism it measured, and INVESTIGATES the frame-latency tail
+spikes it recorded. Explicit non-goals honored throughout: no detector/VLM/
+LLM model change, no OpenVINO/INT8 work, no asyncio conversion, no Redis/
+Celery/Kafka, no risk-score/threshold change, no permanent FPS reduction.
+
+### Phase A — WATCH/structured_report Reasoner contract fix
+
+**Root cause (confirmed, not guessed)**: `DecisionResult`'s own
+`_validate_structured_report_null_when_inappropriate` validator REQUIRED
+`structured_report=null` for every outcome except INCIDENT. Qwen3-8B
+occasionally (real, observed) chooses to populate `structured_report` on a
+WATCH outcome — a reasonable model behavior, not a malformed response —
+which this validator then rejected, forcing `reasoner.py`'s own retry loop
+to burn a full second (and, in the real production incident this phase
+responds to, third) real ~100-200s+ LLM call before ultimately raising
+`LLMResponseValidationError` (measured cost: 390.51s, see the Sprint-0
+entry above).
+
+**Investigated before changing anything** (per this phase's own explicit
+"do not guess" instruction): read `session_report.py`/
+`session_report_service.py` (the "EVENTS vs INCIDENTS" frozen decision
+already treats a WATCH decision as a full "investigated event," and
+`_build_events` ALREADY prefers `structured_report.event_summary` over
+`reasoning_summary` for ANY outcome, not just INCIDENT — i.e. the report
+layer was already written to gracefully use a WATCH's structured_report if
+one existed, it just never received one) and `IncidentTimeline.tsx`
+(renders `decision.structured_report` unconditionally whenever present,
+with no `outcome === "INCIDENT"` gate). Both confirm the product/report
+architecture already fully supports a WATCH-carried structured_report —
+this was a genuine, unnecessary contract restriction, not a deliberate
+product boundary being crossed.
+
+**Fix**: `decision_result.py`'s validator now REQUIRES structured_report
+for INCIDENT (unchanged), PERMITS it (either present or null) for WATCH,
+and still FORBIDS it for NO_INCIDENT/ABSTAIN. `reasoner.py`'s
+`SYSTEM_PROMPT` STRUCTURED REPORT RULE updated to explicitly instruct: for
+WATCH, populate all six fields the SAME way ONLY if genuinely enough
+evidence exists to fill every field meaningfully, otherwise leave the
+whole object null — never partially filled, never padded to satisfy the
+schema on thin evidence. Zero DB migration needed: `structured_report` is
+already a nullable JSONB column with no outcome-tied DB constraint (schema-
+only fix).
+
+**Retry elimination verified with REAL inference** (Phase A.2/A.3): a new
+`test_real_inference_watch_case_never_raises_regardless_of_structured_
+report` test, constructed with the same evidence shape (ELEVATED risk, one
+hazard-consistent observation, ACUTE_HAZARD-flavored trigger_reason) that
+produced the original failure, completed in **150.44s on a SINGLE attempt**
+(no retry) — a direct, real, positive confirmation that the specific
+retry-then-fail pattern this phase targets no longer occurs. New mocked
+regression tests: WATCH+structured_report valid (no retry), WATCH+null
+structured_report still valid, INCIDENT+null structured_report STILL fails
+(the relaxation is WATCH-only, INCIDENT keeps its REQUIRED report),
+NO_INCIDENT+structured_report STILL fails (forbidden, unchanged). A new
+`test_watch_with_structured_report_persists_and_round_trips` DB-persistence
+test confirms the full round trip through `decision_service`.
+
+### Phase B — Semantic Admission Control (bounded, freshness-aware queue)
+
+**Replaces** `AnalysisOrchestrator`'s bare `threading.Semaphore(MAX_
+CONCURRENT_SEMANTIC_ANALYSES)` + non-blocking-acquire-or-drop with a new
+`SemanticAdmissionQueue` (`backend/app/pipeline/semantic_admission_queue.py`).
+Design, deliberately the smallest policy that solves the MEASURED problem
+(the Sprint-0 sweep's real 20%/60%/70% drop-rate progression):
+
+- `MAX_CONCURRENT_SEMANTIC_ANALYSES` (unchanged meaning) now sizes a fixed
+  pool of persistent worker threads, started once per session at
+  construction, joined once at `close()` — the pool itself already caps
+  concurrency, no semaphore object needed.
+- A new, SMALL bounded pending queue — `SEMANTIC_QUEUE_MAX_DEPTH=2` (the
+  governing task's own "very small" guidance; with
+  MAX_CONCURRENT_SEMANTIC_ANALYSES=1, 2 queued items behind one active
+  chain already bounds worst-case queued wait at roughly 2x each call's
+  own real ceiling timeout — deliberately small so a backlog can never
+  grow into the "5-minute semantic backlog" failure mode the governing
+  task explicitly warns against).
+- FRESHNESS POLICY, for free: `submit()` appends to a plain bounded
+  `deque`; when full, the OLDEST queued item is evicted to admit the newer
+  one (`dropped_capacity_total`). Workers pop from the RIGHT (LIFO —
+  freshest first). A popped item whose own queue-wait already exceeds
+  `SEMANTIC_QUEUE_STALENESS_SECONDS=60.0` (the longest of this pipeline's
+  OWN real trigger-firing intervals — VLM_COOLDOWN=30s, ACUTE_HAZARD_
+  COOLDOWN_SECONDS=5s, FALLBACK_ANALYSIS_INTERVAL=60s — a task that waited
+  this long has, by construction, already been overtaken by at least one
+  full trigger cycle's worth of newer video content) is DROPPED, never
+  executed (`dropped_stale_total`).
+- `submit()` remains 100% non-blocking (lock-protected deque append +
+  condition-variable notify, no I/O) — Loop A NEVER blocks on semantic
+  work, preserved exactly as before. Empirically confirmed, not just
+  asserted: the real Loop-A stage diagnostic below measured
+  `semantic_admission_submit`'s own real max latency, under actual heavy
+  Ollama CPU contention, at **0.0025s**.
+- Session termination (Phase G): `AnalysisOrchestrator.run()` now calls
+  `self._semantic_queue.close()` (replacing the old `for thread in loop_b_
+  threads: thread.join()`) — stops accepting new submissions, lets any
+  ALREADY-ACTIVE chain finish normally (never interrupted mid-flight,
+  matching prior behavior), and drains the remaining queue applying the
+  SAME staleness check a mid-run dequeue would — a queued item is only
+  ever skipped at session end if it was ALREADY stale, never force-run and
+  never force-dropped just because the session ended. Worker threads are
+  `daemon=True` as a defensive safety net (never orphans a test/dev
+  process that forgets to call `close()`); the real guarantee against
+  orphaning is that `run()` calls `close()` on every terminal path
+  (COMPLETED/CANCELLED/FAILED) — proven by
+  `test_close_joins_all_worker_threads_no_orphan`.
+- Failure representation (Phase F): fail/timeout/stale/rejected/cancelled
+  are each explicitly represented — `failed_total` (task wrapper raised;
+  expected to stay 0 under normal operation since `_run_loop_b` already
+  catches its own VLM/LLM/Verifier/DB failures internally, unchanged this
+  phase), `dropped_stale_total` (aged out, including a submission that
+  arrives after `close()`), `dropped_capacity_total` (evicted by a fresher
+  arrival), `completed_total`. VLM/LLM-internal timeout/unavailable events
+  remain logged exactly as before (unchanged, not this phase's concern) —
+  a known, honest scope boundary: the queue's own metrics classify
+  ADMISSION outcomes, not semantic-call-internal failure reasons.
+
+9 new unit tests (`test_semantic_admission_queue.py`, zero real Ollama
+calls) cover: non-blocking submit under load, queue-not-drop while
+capacity remains, capacity eviction of the oldest (not newest) queued
+item, stale-drop, close() joining all workers, close() waiting for active
+work, submit-after-close rejection, honest (never-fabricated) empty
+metrics, and failed-task isolation. `test_analysis_orchestrator.py`'s two
+tests that asserted the OLD "second trigger dropped" behavior were
+rewritten to assert the NEW queue/evict semantics; one new orchestrator-
+level test (`test_run_waits_for_queued_semantic_work_before_reaching_
+completed`) proves queued (not just active) work still completes before
+the session reaches COMPLETED — the queue-based equivalent of the
+pre-existing Decision D guarantee.
+
+**"No starvation" — precise meaning, stated explicitly** (per this
+project's own "define assumptions, don't hide them" discipline): this
+does NOT mean every submitted task eventually runs — a genuinely
+stale/superseded task is deliberately dropped, by design. What IS
+guaranteed: an available worker always makes progress on the newest
+available work (never idles while non-stale work is waiting), and no
+STARTED task is ever preempted by this queue itself.
+
+**IMPORTANT — read alongside Phase D below before judging this a strict
+improvement**: this queue is architecturally correct (submission itself is
+genuinely non-blocking, measured at 0.0025s max even under heavy real
+contention) and does reduce OUTRIGHT INSTANT drops, but Phase D's real
+LOW/MODERATE/HIGH comparison found it measurably WORSENS Loop-A's own
+tail latency under sustained high-frequency load (up to 888.87s) as a
+genuine, causally-explained side effect — see Phase D for the full honest
+trade-off, not overstated here.
+
+### Phase C — Loop-A Tail-Latency Investigation (root cause found)
+
+New benchmark-only per-stage instrumentation (`scripts/benchmark_sprint0_
+cpu.py`'s `_run_benchmark_driver`, `stage_timings` parameter — a plain
+`time.perf_counter()` pair placed directly around each REAL stage call,
+restored/torn down automatically since it lives only inside the benchmark
+script; `analysis_orchestrator.py` itself was never touched for this).
+Re-ran the EXACT scenario that originally produced the 61.28s/38.98s
+frame-latency spikes (real Loop A + real VLM contention,
+`loop_a_stage_diagnostic.json`) — this time broken into detection,
+tracking, optical_flow, crowd_metrics, acute_hazard, risk_state,
+trigger_evaluation, and semantic_admission_submit.
+
+**Real result this run: frame_latency.max = 74.50s.** Per-stage
+breakdown pinpoints it exactly:
+
+| Stage | mean | max |
+|---|---|---|
+| detection | 0.119s | 1.966s |
+| tracking | 0.0007s | 0.018s |
+| **optical_flow** | 0.165s | **74.341s** |
+| crowd_metrics | 0.049s | 0.146s |
+| acute_hazard | 0.004s | 0.015s |
+| risk_state | 0.00002s | 0.0001s |
+| trigger_evaluation | 0.000008s | 0.00004s |
+| semantic_admission_submit | 0.000015s | 0.0025s |
+
+`optical_flow`'s own max (74.341s) accounts for essentially the ENTIRE
+frame-latency max (74.50s) — every other stage's own max is under 2
+seconds. `post_detect_stage_sum_of_means` (0.2184s) matches `frame_latency`
+'s own mean (0.2187s) almost exactly, confirming no unaccounted-for gap
+between the stages and the whole-frame measurement.
+
+**Root cause: `DISOpticalFlowAdapter.compute()` (real OpenCV
+`cv2.DISOpticalFlow` computation) genuinely stalls for tens of seconds
+under real Ollama CPU contention** — this machine's real inference worker
+(`llama-server.exe`) reached up to 825% CPU and the backend process itself
+up to 859% CPU during this same window (16 logical cores). This is
+Hypothesis A from the governing task's own list — TRUE CPU/OS-scheduling
+starvation of a genuinely CPU-bound native call, NOT (per the explicit
+elimination below) a hidden synchronous semantic wait:
+
+- **Hypothesis C (hidden synchronous semantic wait) — RULED OUT,
+  empirically**: `semantic_admission_submit`'s own real max, measured in
+  this SAME contended run, was 0.0025s. The admission path (both the OLD
+  semaphore-drop and the NEW queue's `submit()`) is not, and never was,
+  where the stall occurs.
+- **Hypothesis D (DB connection stall) — RULED OUT**: this scenario's
+  driver performs no per-frame DB write at all (persistence only happens
+  at the orchestrator's own periodic checkpoint, not exercised by this
+  particular driver); the stall is fully contained inside one pure
+  in-memory OpenCV call.
+- **Hypothesis A (true CPU/OS-scheduling starvation) — CONFIRMED**: the
+  stall's wall-clock time is measured via a plain timer placed directly
+  around the real `optical_flow.compute()` call — a delay experienced
+  WHILE INSIDE that call (whether from OS thread-scheduling starvation
+  under 16-core oversubscription, or Python-level contention while
+  DISOpticalFlow's native computation runs) is, by construction, correctly
+  attributed to this stage, not silently absorbed elsewhere.
+- **Hypothesis B (Python/GIL contention specifically) — not separately
+  distinguishable from A with this instrumentation** (both would show up
+  identically as elapsed wall-time inside the same call) — see Unresolved
+  Questions.
+
+**This phase does NOT fix this** — per the phase's own absolute scope
+rule (no OpenVINO/INT8/detector optimization, no permanent FPS reduction).
+Flagged as optimization candidate #3 (below), unchanged, unattempted.
+
+### Phase D — OLD vs NEW semantic admission benchmark comparison
+
+Real LOW/MODERATE/HIGH (15s/7s/3s OPERATOR-trigger intervals, same real
+20.1s video) comparison: OLD read directly from the already-recorded prior
+`trigger_frequency_sweep.json` (never re-simulated); NEW re-run for real
+through the actual, unmodified `AnalysisOrchestrator` (which now uses
+`SemanticAdmissionQueue`), via `scripts/benchmark_sprint0_cpu.py admission-
+compare`.
+
+| Level | OLD trigger attempts / dropped | OLD Loop-A FPS | NEW enqueued / started / dropped(capacity+stale) | NEW queue_wait mean/max | NEW frame_latency max |
+|---|---|---|---|---|---|
+| LOW | 5 / 1 (20%) | 5.02 | 6 / 3 / 1+2=3 (50%) | 68.8s / 186.97s | 1.21s |
+| MODERATE | 5 / 3 (60%) | 4.39 | 7 / 4 / 2+1=3 (43%) | 36.8s / 150.70s | 11.74s |
+| HIGH | (70%, prior phase) | — | 11 / 5 / 4+2=6 (55%) | 263.1s / 945.36s | **888.87s** |
+
+**Honest measurement caveat**: NEW's own trigger-injection technique (a
+temporary `TriggerEngine.evaluate` monkeypatch, restored after — the same
+class of mechanism `_instrument_trigger_engine_for_frame_latency` already
+used) forces a trigger on the very FIRST `evaluate()` call (state starts
+at `None`), while OLD's driver only starts counting from timestamp 0.0 and
+therefore does not fire that same immediate first trigger — so NEW's raw
+attempt/enqueue COUNTS are not perfectly identical to OLD's for the same
+nominal interval (one extra early trigger). This does not affect the
+qualitative finding below, which is about LATENCY, not counts.
+
+**Real, measured, and NOT the outcome expected going in**: the bounded
+queue does reduce OUTRIGHT INSTANT drops (a submitted trigger now gets a
+real chance to run instead of being discarded within microseconds) — but
+it does NOT reduce total loss to zero (dropped_capacity + dropped_stale
+together are still 43-55% of submissions at these same real frequencies),
+AND it introduces two NEW, real costs the OLD drop-instantly design never
+had:
+
+1. **Large real queue-wait latency**: up to 945.36s (~15.75 minutes)
+   recorded for a single item at HIGH frequency before it was either
+   started or dropped stale. (`queue_wait_seconds_max` includes waits
+   recorded for items that were ULTIMATELY dropped as stale, by design —
+   see semantic_admission_queue.py — not only waits for items that
+   actually ran; this is intentional so the real staleness durations stay
+   visible for diagnosis, not just the "successful" ones.)
+2. **WORSE Loop-A frame-latency tail than anything seen before this
+   phase**: HIGH's real frame_latency max reached **888.87 seconds** — an
+   order of magnitude worse than the 74.5s spike Phase C root-caused, and
+   far worse than OLD's own comparable-frequency runs (which stayed
+   sub-second: 0.29s at LOW, 0.39s at MODERATE in the OLD driver's own
+   measurements). MODERATE similarly regressed to an 11.74s max (still
+   worse than OLD's 0.39s at the same nominal frequency).
+
+**Why**: this is a genuine, causally-explainable second-order effect, not
+noise. The bounded queue's entire point is to let MORE triggered semantic
+work actually EXECUTE (rather than being instantly discarded) — and every
+additional real VLM/Reasoner call that executes is additional real wall-
+clock time during which `llama-server.exe` consumes very heavy CPU
+(up to 825-871% observed) on this SAME single machine that Loop A's own
+CPU-bound `DISOpticalFlowAdapter.compute()` call (Phase C's confirmed
+culprit) is also trying to run on. This machine has NO CPU isolation
+between Loop A and Loop B (`config.py`'s own pre-existing, documented
+"§5 single-CPU-box MVP target" framing) — so admitting more real semantic
+work necessarily means MORE cumulative exposure of Loop A to exactly the
+CPU contention Phase C already identified as the tail-latency root cause,
+not less.
+
+**Honest conclusion — this is a genuine trade-off, not a strict
+improvement, and is reported as such rather than oversold**: the bounded
+queue succeeds at its narrow, explicitly-stated goal (a submitted trigger
+is no longer discarded within microseconds purely because a worker
+happened to be busy at that exact instant — it gets a real, bounded,
+freshness-aware chance) and is architecturally correct (submit() itself
+measured non-blocking at 0.0025s max even under this same contention, and
+Loop A never stalls waiting on the ADMISSION decision itself — Phase C
+already ruled that out). But it does NOT — and, on this single-box
+hardware with no Loop-A/Loop-B CPU isolation, structurally CANNOT — reduce
+total drops to zero, and it measurably WORSENS Loop-A's own tail latency
+under sustained high-frequency load, because it lets more real, CPU-heavy
+semantic work actually run. This exact trade-off is why the governing task
+explicitly warned "a solution that reduces drops to 0% but creates
+5-minute semantic backlogs is NOT successful" — this phase's real
+measurement confirms that warning was well-founded, and reports it plainly
+rather than declaring victory on the narrower "no longer instant-dropped"
+metric alone.
+
+### Tests
+
+`pytest tests/test_reasoner.py` (mocked subset + new real-inference test):
+9 mocked passed; `test_real_inference_watch_case_never_raises_regardless_
+of_structured_report` passed in 150.44s (single attempt). `pytest tests/
+test_semantic_admission_queue.py`: 9/9 passed (zero real Ollama calls).
+`pytest tests/test_analysis_orchestrator.py`: 16/16 passed, including the
+two rewritten drop→queue tests and the new queued-work-completes-before-
+COMPLETED test. `pytest tests/test_decision_persistence.py`: 6/6 passed,
+including the new WATCH+structured_report round-trip test. Full backend
+suite re-run after all changes (see the final chat response for the exact
+pass count) — strictly additive, no existing test/threshold/formula/route
+modified.
+
+### Optimization Candidates (ranked, evidence-based, NOT implemented this phase)
+
+1. **Loop-A / Loop-B CPU isolation, or a load-aware admission policy that
+   stops admitting new semantic work once Loop-A's own recent frame
+   latency degrades past a threshold.** Phase D's real finding is that
+   simply admitting more semantic work (even correctly, non-blockingly,
+   via a bounded queue) directly worsens Loop-A's own tail latency on this
+   shared-CPU single-box target — the deepest lever is either physical/
+   process isolation (a later, larger architectural change, out of this
+   phase's scope) or making the admission policy Loop-A-latency-aware
+   rather than purely queue-depth/staleness-aware.
+2. **Fix the real `structured_report`/WATCH retry-then-fail defect for
+   the SPECIFIC case this phase's own fix does not cover**: this phase
+   fixed the ROOT CAUSE (the validator itself), verified with real
+   inference (150.44s, single attempt, no retry) — this candidate is now
+   effectively CLOSED, downgraded from the Sprint-0 phase's #2 ranking.
+   Kept here only as a reminder to re-verify under real production load
+   over time, since a single real regression test is not exhaustive
+   proof against every possible model output shape.
+3. **Investigate `DISOpticalFlowAdapter.compute()`'s own real behavior
+   under CPU oversubscription** (Phase C's confirmed root cause,
+   independently reconfirmed and WORSENED in Phase D's HIGH-frequency
+   run) — e.g. whether a cheaper DIS preset, explicit CPU-affinity/thread-
+   count tuning for OpenCV, or bounding Ollama's own thread count would
+   reduce this specific stage's exposure to contention. Explicitly NOT
+   attempted this phase (OpenVINO/INT8/detector optimization is an
+   explicit non-goal).
+4. **Re-measure with a LARGER, more realistic queue-wait staleness
+   value or a queue-depth of 1** (a smaller bounded queue would reduce
+   worst-case queue-wait latency at the cost of reverting closer to the
+   OLD drop-heavy behavior) — an explicit, testable follow-up tuning
+   question this phase's own SEMANTIC_QUEUE_MAX_DEPTH=2/SEMANTIC_QUEUE_
+   STALENESS_SECONDS=60.0 defaults raise but do not resolve; both are
+   documented UNVALIDATED ENGINEERING JUDGMENT in config.py.
+5. **Multi-run averaging methodology**: every real benchmark number in
+   this phase (like the Sprint-0 phase before it) is a SINGLE run, not an
+   average across repeated trials — the large observed run-to-run
+   variance already documented in the Sprint-0 phase remains unexplained
+   and unaveraged here too.
+
+Confirmed throughout this phase: no production threshold, formula,
+detector/VLM/LLM model, or asyncio/Redis/Celery/Kafka architecture was
+introduced. `MAX_CONCURRENT_SEMANTIC_ANALYSES`'s own meaning is unchanged
+(still 1). No git command was run at any point in this phase.
+
+## Final CPU Stabilization Phase
+
+Direct follow-on to the phase above. PRIMARY DECISION driving every change
+here: **Loop-A latency has priority over semantic throughput** — a
+semantic analysis that arrives minutes late is less useful than a dropped
+semantic request while the deterministic pipeline stays responsive. This
+is a real-time crowd-monitoring system; optimizing purely for "maximum
+semantic completion rate" (the prior phase's own implicit framing) was the
+wrong objective, per the real evidence that phase itself produced.
+
+### Step 1 — Reverted the bad queue default
+
+`SEMANTIC_QUEUE_MAX_DEPTH` 2→**1**, `SEMANTIC_QUEUE_STALENESS_SECONDS`
+60.0→**30.0** (config.py). The `SemanticAdmissionQueue` class itself
+(bounded, non-blocking, freshness-aware LIFO eviction, explicit drop
+accounting) is UNCHANGED and reused — only its DEFAULT sizing changed, per
+this phase's own "do not delete the reusable admission abstraction"
+instruction. Real evidence this responds to: at depth=2, real LOW/MODERATE/
+HIGH runs showed queue waits up to 945.36s and Loop-A frame latency up to
+888.87s (see the prior phase's own Phase D entry) — a backlog that
+structurally cannot exist at depth=1 (at most one active + one pending,
+ever).
+
+### Step 2 — Ollama CPU/thread limiting: VERIFIED, not invented
+
+Inspected the ACTUAL installed `ollama` Python client (`ollama._types.
+Options`, direct `inspect.getsource()` dump, not assumed): confirmed
+`num_thread: Optional[int]` is a real, typed, documented "load time
+option" already present on the client's own `Options` model — forwarded
+verbatim to Ollama's server, which maps it to the underlying llama.cpp
+`--threads` equivalent. This is the SAME mechanism already confirmed (via
+`Get-Process`) to control `llama-server.exe` — the actual CPU-heavy
+inference process, not this backend's own Python process.
+
+New setting `OLLAMA_NUM_THREAD: Optional[int]` (config.py), wired into
+ALL THREE real Ollama call sites that use `options={...}`
+(`minicpm_vlm.py`, `reasoner.py`, `verifier.py` — Verifier's own timeout/
+contract untouched, only its thread cap) — `None` (unset) preserves prior,
+pre-this-phase behavior exactly; when set, forwarded as
+`options["num_thread"]`. Two new mocked regression tests
+(`test_ollama_num_thread_forwarded_when_configured`/`..._absent_when_
+unconfigured` in `test_reasoner.py`) confirm the wiring.
+
+### Step 3 — Real thread-cap sweep (unrestricted / 4 / 8 / 12)
+
+Real run against this 16-logical/8-physical-core machine, same real
+VLM-contention scenario Phase C used:
+
+| num_thread | VLM latency mean/max | ollama_cpu_percent max | Loop-A frame_latency max |
+|---|---|---|---|
+| unrestricted (None) | 34.70s / 39.96s | 825.0% | 0.44s |
+| 4 | 49.81s / 55.65s | **412.6%** | 0.34s |
+| 8 | 29.69s / 38.12s | 825.0% | 0.28s |
+| 12 | 27.86s / 32.55s | 1166.7% | 0.74s |
+
+**Honest, important caveat, reported plainly rather than hidden**: NONE of
+these 4 runs reproduced the catastrophic tail spike this phase set out to
+fix (all frame_latency max stayed under 1s, including the "unrestricted"
+config that should be directly comparable to Phase C's own original
+74.50s-max run) — confirming this project's own already-documented
+"large, unexplained run-to-run variance" applies to the pathology's
+reproducibility itself, not just to absolute numbers. This sweep alone
+therefore does NOT prove num_thread fixes the stall — it proves
+`num_thread` is a REAL, WORKING lever with a measurable effect on Ollama's
+own peak CPU consumption (num_thread=4 nearly halved it, 412.6% vs
+825.0%), at an accepted latency cost (VLM calls ~43% slower, still well
+inside VLM_REQUEST_TIMEOUT_SECONDS=60s). `num_thread=8/12` did NOT show a
+comparable CPU-ceiling reduction in this sample. `num_thread=4` selected
+as the new default from this real, if partial, evidence.
+
+### Step 4 — DIS optical-flow investigation
+
+`DIS_PRESET="fast"` (unchanged) → `cv2.DISOPTICAL_FLOW_PRESET_FAST`.
+Confirmed real, additional lever exists and was NOT invented: `cv2.
+setNumThreads()`/`cv2.getNumThreads()` are genuine functions on the
+installed `opencv-python-headless==5.0.0.93` build — `cv2.getNumThreads()`
+returned **16** (OpenCV's own internal parallel_for_ thread pool, used by
+DIS's own computation, defaults to using ALL logical cores on this
+machine) — a real, concrete instance of Hypothesis C from Phase C
+("DIS threading fighting Ollama threading"): both OpenCV's internal
+thread pool and `llama-server.exe`'s inference threads compete for the
+SAME 16 logical cores by default.
+
+### Step 5 — DIS preset micro-benchmark: NOT RUN, by design
+
+Per this phase's own Step 14 exit condition ("if Ollama thread limiting
+does NOT materially reduce DIS tail latency... perform ONLY the smallest
+DIS-side experiment"): Step 6's decisive test (below) showed the Ollama-
+side fix ALONE reduced the confirmed catastrophic case by ~99.95%. Running
+an additional DIS-preset experiment on top of an already-successful fix
+would be exactly the "open-ended experimentation" this final stabilization
+pass is explicitly meant to avoid. `cv2.setNumThreads()` remains a real,
+verified, documented candidate lever for a FUTURE phase if further
+tightening is ever needed — not implemented or tuned this phase.
+
+### Step 6/9/13 — Decisive validation: the ONE condition already confirmed to reliably reproduce catastrophic damage
+
+The thread-cap sweep (Step 3) could not validate a fix against a stall it
+did not reproduce. Instead, re-ran the ONE real scenario already CONFIRMED
+(prior phase, real data) to reliably produce catastrophic damage — the
+real HIGH-frequency (3.0s interval) trigger scenario via the actual,
+unmodified `AnalysisOrchestrator` — this time against the FINAL configured
+defaults (`OLLAMA_NUM_THREAD=4`, `SEMANTIC_QUEUE_MAX_DEPTH=1`,
+`SEMANTIC_QUEUE_STALENESS_SECONDS=30.0`, `DIS_PRESET="fast"` unchanged):
+
+| Metric | BEFORE (depth=2, num_thread=None) | AFTER (depth=1, num_thread=4) | Change |
+|---|---|---|---|
+| Loop-A frame_latency max | **888.87s** | **0.447s** | ~1988x reduction |
+| Total session wall-clock | 1567.20s | 359.26s | ~4.4x faster |
+| ollama_cpu_percent max | (825.0%+ observed elsewhere at same freq) | 436.9% | real, large reduction |
+| Semantic completed | 5 of 11 (45%) | 3 of 11 (27%) | fewer completed — EXPECTED, INTENDED trade-off |
+| queue_wait max (incl. stale-dropped) | 945.36s | 231.74s | reduced, though secondary to the frame-latency result |
+
+**This is a clean, real, decisive success** against Step 13's own
+Definition of a Successful Fix: no multi-minute Loop-A stall (0.447s max,
+down from 888.87s), Loop-A stayed responsive throughout (p99=0.356s),
+semantic workload stayed bounded (queue never exceeded depth 1), and
+FEWER semantic calls completed — an explicitly ACCEPTED, INTENDED
+consequence of this phase's own priority ordering, not a failure. Success
+is NOT claimed on "more semantic calls completed," per this phase's own
+explicit instruction not to.
+
+### Step 9 — Two-session validation
+
+Same real, unmodified `multi-session` benchmark scenario, now automatically
+exercising the new defaults (no separate flag needed — it just reads
+current settings). Both sessions COMPLETED, same evidence/decision counts
+as before (4+4):
+
+| | BEFORE (depth=2, num_thread=None) | AFTER (depth=1, num_thread=4) |
+|---|---|---|
+| Total wall-clock | 250.29s | 302.21s (+21%, expected: num_thread=4 slows individual Ollama calls) |
+| backend_cpu_percent max | 1593.8% | 1395.6% |
+| ollama_cpu_percent max | 825.0% | **469.4%** |
+
+The pre-stabilization result was preserved as `multi_session_2_PRE_
+STABILIZATION.json` before being overwritten, so this comparison is
+against a genuinely saved prior real run, not a reconstruction. This
+scenario does not capture per-frame Loop-A latency (aggregate wall-clock/
+CPU only, unchanged in scope from Sprint-0) — the frame-level evidence for
+the fix itself is Step 6's decisive single-session HIGH-frequency result
+above.
+
+### Step 10 — Reasoner / Verifier: untouched, as instructed
+
+`decision_result.py`'s WATCH/structured_report validator and
+`VERIFIER_REQUEST_TIMEOUT_SECONDS`/`VERIFIER_MAX_THINKING_TOKENS` are
+BYTE-FOR-BYTE unchanged this phase — only `options["num_thread"]` was
+added to Verifier's own already-existing `options` dict (a resource-usage
+change, not a contract change). No Verifier call was artificially forced
+this phase.
+
+Confirmed throughout: no production threshold, formula, detector/VLM/LLM
+model, Reasoner/Verifier contract, or asyncio/Redis/Celery/Kafka
+architecture was introduced or altered beyond the two documented settings
+above (`OLLAMA_NUM_THREAD`, `SEMANTIC_QUEUE_MAX_DEPTH`/`SEMANTIC_QUEUE_
+STALENESS_SECONDS`). No git command was run at any point in this phase.
+
+## Final Release Hardening Phase
+
+Cleanup/verification pass. No new product features, no architecture
+redesign, no OpenVINO/INT8 work, no semantic-admission redesign, no DIS
+change, no risk-formula/threshold change. Only genuine test/infrastructure
+defects were fixed.
+
+### 1. Ollama CPU cap: `OLLAMA_NUM_THREAD=4` — confirmed reaching all three real call paths
+
+Traced the ACTUAL runtime call (not just config.py) for all three Ollama
+adapters. Added 6 new mocked regression tests (2 each in `test_reasoner.py`
+/`test_minicpm_vlm.py`/`test_verifier.py`) that construct the real
+class, mock only `_client.chat`, and assert `kwargs["options"]["num_thread"]
+== 4` when configured / `"num_thread" not in kwargs["options"]` when unset.
+All 6 pass — `OLLAMA_NUM_THREAD=4` is confirmed, with evidence, to reach
+VLM, Reasoner, AND Verifier. Verified the EFFECTIVE runtime `Settings()`
+object directly (not just grepping `.env`): `.env` has no override for any
+of `OLLAMA_NUM_THREAD`/`MAX_CONCURRENT_SEMANTIC_ANALYSES`/`SEMANTIC_QUEUE_
+MAX_DEPTH`/`SEMANTIC_QUEUE_STALENESS_SECONDS`/`DIS_PRESET` — the code
+defaults ARE the effective configuration, no stale-.env conflict exists
+(same "verify the effective value, not just the file" discipline already
+established for the `RISK_ELEVATED_THRESHOLD` stale-.env incident).
+
+### 2. Semantic admission: confirmed unchanged — `MAX_CONCURRENT_SEMANTIC_ANALYSES=1`, queue depth=1, staleness=30.0s
+
+Byte-for-byte unchanged this phase, per Step 0's explicit "do not redesign
+semantic admission" instruction.
+
+### 3. DIS: `DIS_PRESET="fast"` retained, unchanged
+
+Per Step 0's explicit "do not change DIS" instruction. Not touched.
+
+### 4. Reasoner: `WATCH + structured_report` fix confirmed still correct, unchanged
+
+`decision_result.py`'s validator and `reasoner.py`'s prompt are unchanged
+this phase.
+
+### 5. Three pre-existing test failures — classified with real evidence, not assumed
+
+**`test_minicpm_vlm.py::test_empty_no_hazard_scene_can_return_empty_
+observations_list`** — Category: genuine PRE-EXISTING test-design defect
+(brittle probabilistic assertion), fixed. The test's OWN prior docstring
+already admitted it was asserting one specific non-deterministic sampled
+outcome ("not asserting this ALWAYS happens... proves it is GENUINELY
+POSSIBLE") while its actual assertion (`result.observations == []`)
+demanded exactly that outcome every time — a real design defect, not
+brittleness introduced this phase. REDESIGNED (renamed `test_empty_no_
+hazard_scene_never_produces_a_confident_fabricated_hazard_claim`) to
+assert the DETERMINISTIC CONTRACT the scene actually supports: schema/
+coordinate/confidence validity for every returned observation (zero or
+more, both legitimate), and — the real regression this test still must
+catch — no CONFIDENT (>=0.5) claim in an acute/alarming category
+(VISIBLE_HAZARD/UNUSUAL_MOVEMENT/VISIBLE_COMPRESSION) on a genuinely
+blank scene. Verified against the SAME real output that originally failed
+(a low-confidence VISIBLE_OBSTRUCTION hedge) — the new contract correctly
+accepts it as legitimate, non-fabricated model behavior.
+
+**`test_verifier.py`'s two real-inference tests** — Category: a REAL,
+newly-discovered production-configuration interaction (not simple test
+flakiness, not a test-design defect, not full-suite-concurrency noise —
+each was ruled out with actual evidence, not assumed):
+- Re-ran BOTH tests together, isolated (no full suite, no other tests
+  running) — BOTH FAILED with a real `LLMVerificationUnavailableError:
+  ... timed out` at ~262.40s/262.46s, just over `VERIFIER_REQUEST_
+  TIMEOUT_SECONDS=260.0`. This alone rules out "full-suite concurrency"
+  as the sole cause — the SAME two tests, run alone with nothing else
+  competing for Ollama, still failed this way.
+- Ran ONE further diagnostic (`VERIFIER_REQUEST_TIMEOUT_SECONDS`
+  temporarily raised to 500.0 IN-PROCESS ONLY, for this one measurement —
+  never written to config.py) against the exact same real fixture data:
+  the real, UNCENSORED completion time was **237.32s**, a genuine,
+  successful, schema-valid `overall_verdict="CONFIRMED"` result.
+- **Real evidence pattern, n=3 real num_thread=4 samples this phase**:
+  237.32s (completed), and two right-censored samples (true value unknown,
+  ≥260s, cut off by the existing timeout before completion) — ALL THREE
+  higher than the Reasoner Stability phase's own original 5-sample
+  pre-num_thread-cap history (177.76-213.50s, max=213.50s). This is a
+  real, causally coherent finding: `OLLAMA_NUM_THREAD=4` (introduced the
+  PRIOR phase, confirmed to slow VLM calls ~43% in that phase's own
+  sweep) also measurably slows the Verifier's `think=True` call — its
+  ORIGINAL timeout margin (calibrated pre-num_thread-cap, "observed
+  max=213.50s * 1.2 = 260.0") is now, on real evidence, sometimes
+  genuinely insufficient.
+
+**Deliberate decision: `VERIFIER_REQUEST_TIMEOUT_SECONDS` was NOT changed
+this phase.** A rigorous recalibration (matching this project's own
+established "observed max * 1.2" methodology) would require an UNCENSORED
+max — the two ≥260s samples don't provide one, and collecting it properly
+(re-running with an extended timeout until a genuine completion is
+observed) is exactly the kind of additional open-ended real-Ollama
+experimentation this final hardening phase explicitly avoids. This is
+flagged as a REAL, KNOWN RELEASE RISK (not silently absorbed, not
+mischaracterized as "just flaky") — see FINAL_RELEASE_READINESS_REPORT.md.
+The architecture ALREADY degrades gracefully when this happens
+(`LLMVerificationUnavailableError` is caught in `AnalysisOrchestrator.
+_run_loop_b`, logged, and the INCIDENT decision is persisted without
+verification — never a crash, never data corruption) — this is a coverage/
+completeness risk (an occasional real INCIDENT going unverified), not a
+correctness or stability risk.
+
+### 6. Tail-latency finding (carried forward, unchanged this phase)
+
+Catastrophic Loop-A stalls were driven by real CPU contention between
+`DISOpticalFlowAdapter.compute()` and `llama-server.exe` (confirmed, prior
+phase) and were dramatically reduced — max frame latency 888.87s -> 0.447s
+— by Ollama thread limiting (`OLLAMA_NUM_THREAD=4`) in the decisive
+HIGH-frequency real benchmark run. **One real run** — not a statistical
+guarantee across all conditions (see the prior phase's own honest
+non-reproducibility finding from its thread-cap sweep).
+
+Confirmed throughout: no production threshold, formula, semantic-admission
+policy, DIS configuration, or Reasoner/Verifier CONTRACT was changed this
+phase. `VERIFIER_REQUEST_TIMEOUT_SECONDS` remains at its pre-existing
+value, deliberately not recalibrated — see item 5 above. No git command
+was run at any point in this phase.

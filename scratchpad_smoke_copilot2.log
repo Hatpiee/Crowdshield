@@ -1,0 +1,3 @@
+suggested_questions: ['What should the operator do next?', 'What was the most serious event?', 'Why did the risk increase?', 'What evidence supports the current assessment?', "Why weren't any incidents confirmed?", 'What is driving the current risk level?']
+COPILOT ANSWER: No confirmed incidents were identified in this session. The analysis indicates that none of the investigated events met the evidence threshold required for incident escalation. All three investigated events were classified as ABSTAINED due to either insufficient confidence or incomplete evidence, specifically missing vision observations.
+COPILOT CITED: []

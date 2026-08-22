@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -250,6 +251,33 @@ class Settings(BaseSettings):
     # `curl http://localhost:11434/api/version` both succeeded). Ollama's
     # own default port; not something this project's own code chose.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    # Final CPU Stabilization phase (Step 2): a genuinely supported, VERIFIED
+    # field on the installed `ollama` Python client's own `Options` model
+    # (`ollama._types.Options.num_thread: Optional[int]`, a documented
+    # "load time option" — confirmed by direct inspection before use, not
+    # invented) — forwarded to Ollama's server-side inference call, capping
+    # how many CPU threads that single generation uses (the actual heavy
+    # CPU consumer, empirically confirmed to be the separate `llama-server.
+    # exe` process, not this backend process — see DECISIONS.md's Sprint-0
+    # entry). `None` (default) means "do not set it" — preserves whatever
+    # Ollama's own default heuristic was before this phase (unconstrained,
+    # observed up to 825-871% CPU on this 16-logical-core machine).
+    #
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 4 — of the
+    # 4 real values sampled (unrestricted/4/8/12) against this machine's
+    # 16 logical / 8 physical cores, num_thread=4 was the ONLY one that
+    # produced a real, measured reduction in Ollama's own peak CPU
+    # consumption (ollama_cpu_percent_max: 412.6% vs. 825.0% unrestricted —
+    # roughly half), at a real, accepted latency cost (mean VLM latency
+    # 49.81s vs. 34.70s unrestricted, ~43% slower but still well within
+    # VLM_REQUEST_TIMEOUT_SECONDS=60s). num_thread=8/12 did NOT show a
+    # comparable CPU-ceiling reduction in this sample (see DECISIONS.md's
+    # "Final CPU Stabilization" entry for the full real sweep data and its
+    # own honest non-reproducibility caveat — the ORIGINAL catastrophic
+    # stall this setting targets did not reproduce in the same run as this
+    # sweep, so this default is chosen from the CPU-ceiling evidence that
+    # DID reproduce cleanly, not from a repeated stall/no-stall comparison).
+    OLLAMA_NUM_THREAD: Optional[int] = 4
     # Phase 14 (ROI selection, decision #1): the argmax risk-grid cell's
     # own pixel footprint is expanded by this factor (uniformly around its
     # center) before being sent as the VLM's zoomed ROI crop, so the model
@@ -544,6 +572,36 @@ class Settings(BaseSettings):
     # runaway generation (e.g. a repetition loop) — not an active
     # constraint expected to bind under normal operation.
     VERIFIER_MAX_THINKING_TOKENS: int = 1000
+    # Final Intelligence phase (Operator Copilot, Phase H): reuses
+    # LLM_MODEL/OLLAMA_BASE_URL directly ("do not introduce another LLM
+    # model") — a dedicated timeout/retry/token budget is still needed
+    # because the Copilot's prompt shape (a full session-context JSON
+    # payload, not the Reasoner's single-EvidencePackage context) is
+    # materially different in size from either LLM_REQUEST_TIMEOUT_SECONDS'
+    # or VERIFIER_REQUEST_TIMEOUT_SECONDS' own measured prompt shapes.
+    # Measured directly: scripts/measure_copilot_latency.py, 2 real
+    # think=False Qwen3-8B calls against a representative session-context
+    # payload (8 events, ~5.4KB serialized) + a real operator question, on
+    # this same CPU-served Ollama instance. Raw latencies: 93.84s, 18.08s
+    # (eval_count=54 both times — the ~5x spread is real CPU-contention
+    # variance, not generation-length variance). UNVALIDATED ENGINEERING
+    # JUDGMENT (n=2, logged in DECISIONS.md): observed max * 1.2 =
+    # 93.84 * 1.2 = 112.6, rounded up to 115.0 — same margin methodology as
+    # LLM_REQUEST_TIMEOUT_SECONDS/VERIFIER_REQUEST_TIMEOUT_SECONDS above,
+    # but with a smaller sample than either of those (n=5), since this is a
+    # new, lower-traffic, on-demand (not per-frame-triggered) code path.
+    COPILOT_REQUEST_TIMEOUT_SECONDS: float = 115.0
+    COPILOT_MAX_RETRIES: int = 2
+    # Real measured eval_count=54 tokens both trials — 500 is a generous
+    # ~9x backstop against runaway generation, mirroring VERIFIER_MAX_
+    # THINKING_TOKENS' own "generous backstop, not an active constraint"
+    # precedent.
+    COPILOT_MAX_GENERATION_TOKENS: int = 500
+    # Slightly above LLM_TEMPERATURE (0.15): the Copilot answers open-ended
+    # operator questions in prose rather than filling a fixed report
+    # schema, so a little more lexical variety is appropriate — still low
+    # enough to stay factual/grounded, not creative.
+    COPILOT_TEMPERATURE: float = 0.2
     # Phase 19 (Incident Manager, decision #2): a new incident-worthy
     # decision correlates into an existing DETECTED/ACTIVE incident for the
     # SAME session if its (video-timeline) timestamp_seconds is within this
@@ -577,6 +635,47 @@ class Settings(BaseSettings):
     # clear benefit; a genuinely multi-core/multi-GPU deployment could
     # raise this later without any code change.
     MAX_CONCURRENT_SEMANTIC_ANALYSES: int = 1
+    # Semantic Admission Control phase: replaces the prior "drop on cap"
+    # behavior with a small bounded pending queue (see
+    # semantic_admission_queue.py) — how many triggered-but-not-yet-started
+    # semantic tasks may wait for a free worker slot at once. A newer
+    # arrival evicts the OLDEST queued item once this depth is reached
+    # (freshness-aware, not FIFO).
+    #
+    # REVISED, Final CPU Stabilization phase (was 2 — see DECISIONS.md
+    # "Semantic Admission Control" for the original reasoning and
+    # DECISIONS.md "Final CPU Stabilization" for why it was revised down).
+    # REAL MEASURED EVIDENCE this revision responds to: at depth=2, a real
+    # LOW/MODERATE/HIGH benchmark comparison found queue waits up to 945.36s
+    # and — critically — Loop-A's OWN frame latency reached 888.87s under
+    # real HIGH-frequency contention, because admitting MORE real semantic
+    # work (rather than dropping it) directly increases Loop-A's exposure
+    # to the SAME CPU contention already root-caused (Phase C) inside
+    # DISOpticalFlowAdapter.compute(). Per this project's own explicit
+    # "Loop-A latency has priority over semantic throughput" decision: 1 —
+    # exactly one active chain (MAX_CONCURRENT_SEMANTIC_ANALYSES) plus at
+    # most ONE pending slot, never more, so a backlog structurally cannot
+    # build up.
+    SEMANTIC_QUEUE_MAX_DEPTH: int = 1
+    # How long a queued (not yet started) semantic task may wait before a
+    # worker treats it as stale and drops it without executing.
+    #
+    # REVISED, Final CPU Stabilization phase (was 60.0 — see above; that
+    # value bounded when a STALE check WOULD trigger, but did not bound how
+    # long a request could sit in the queue before a worker got to it at
+    # all, since the ACTIVE chain ahead of it could itself run for minutes).
+    # UNVALIDATED ENGINEERING JUDGMENT (logged in DECISIONS.md): 30.0
+    # seconds — tightened to VLM_COOLDOWN's own value (the shortest
+    # "meaningful re-check" interval this pipeline already uses elsewhere,
+    # excluding ACUTE_HAZARD's much shorter 5s cooldown, which is deliberately
+    # NOT used here since it would be overly aggressive for the
+    # non-acute-hazard trigger types this queue equally serves) — a request
+    # that has waited longer than one full VLM_COOLDOWN window is, by
+    # construction, likely already superseded by fresher video content, and
+    # per this phase's own "a dropped semantic request is preferable to a
+    # stale one that arrives late" priority, should be dropped rather than
+    # run.
+    SEMANTIC_QUEUE_STALENESS_SECONDS: float = 30.0
     # Phase 20 (Decision F/G): how many Loop A frames between each
     # periodic checkpoint (cancellation check + progress-column update +
     # heatmap-due check) — reused for all three concerns rather than three

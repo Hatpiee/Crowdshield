@@ -254,3 +254,32 @@ def test_get_session_status_lightweight_shape(client, auth_headers, make_video, 
     data = response.json()["data"]
     assert data["status"] == "QUEUED"
     assert data["latest_processing_run"]["status"] == "PENDING"
+
+
+def test_get_session_report_not_found(client, auth_headers):
+    response = client.get(
+        "/api/v1/sessions/00000000-0000-0000-0000-000000000000/report", headers=auth_headers
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_get_session_report_zero_events_shape(client, auth_headers, make_video):
+    video = make_video()
+    created = client.post(
+        "/api/v1/sessions", headers=auth_headers, json={"video_id": str(video.id)}
+    ).json()["data"]
+
+    response = client.get(
+        f"/api/v1/sessions/{created['id']}/report", headers=auth_headers
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["session_id"] == created["id"]
+    assert data["investigated_event_count"] == 0
+    assert data["confirmed_incident_count"] == 0
+    assert data["events"] == []
+    assert data["timeline"] == []
+    assert data["overview_summary"]
+    assert data["incidents_summary"]
+    assert data["risk_overview"]["current_state"] is None

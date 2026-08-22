@@ -1,0 +1,121 @@
+{
+  "scenario": "LOOP_A_PLUS_VLM",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T09:41:05.563574+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0
+  },
+  "loop_a": {
+    "frame_count": 603,
+    "video_duration_seconds": 20.1,
+    "loop_a_wall_seconds": 203.7071344000001,
+    "loop_a_effective_fps": 2.960131964823318,
+    "total_wall_seconds_including_semantic_join": 221.76458020000018,
+    "frame_latency": {
+      "count": 602,
+      "mean": 0.20403448139534422,
+      "p50": 0.09284269999989192,
+      "p95": 0.17230144500003897,
+      "p99": 0.20863102599972083,
+      "max": 61.284138600000006,
+      "min": 0.056343700000070385
+    },
+    "trigger_attempts": 4,
+    "trigger_dropped_by_semaphore": 0,
+    "semantic_calls": [
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 2.0,
+        "latency_seconds": 6.495410600000014,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 7.0,
+        "latency_seconds": 33.1318483,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 13.766666666666667,
+        "latency_seconds": 28.27108589999989,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 18.866666666666667,
+        "latency_seconds": 25.413292900000215,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      }
+    ],
+    "semantic_by_stage": {
+      "VLM": {
+        "count": 4,
+        "mean": 23.32790942500003,
+        "p50": 26.842189400000052,
+        "p95": 32.40273393999998,
+        "p99": 32.986025428,
+        "max": 33.1318483,
+        "min": 6.495410600000014
+      },
+      "REASONER": {
+        "count": 0,
+        "mean": null,
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null,
+        "min": null
+      }
+    },
+    "failures": {
+      "attempted": 4,
+      "successful": 4,
+      "failed": 0,
+      "timed_out": 0,
+      "dropped": 0,
+      "retried": 0,
+      "records": []
+    }
+  },
+  "resources": {
+    "backend_cpu_percent_mean": 529.2188087774294,
+    "backend_cpu_percent_max": 872.1,
+    "backend_rss_mb_mean": 568.1692422609718,
+    "backend_rss_mb_peak": 600.08203125,
+    "ollama_cpu_percent_mean": 138.9002089864159,
+    "ollama_cpu_percent_max": 826.7,
+    "ollama_rss_mb_mean": 725.0208945598224,
+    "ollama_rss_mb_peak": 2205.6640625,
+    "sample_count": 319
+  }
+}

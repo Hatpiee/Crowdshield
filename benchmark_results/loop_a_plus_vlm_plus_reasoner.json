@@ -1,0 +1,154 @@
+{
+  "scenario": "LOOP_A_PLUS_VLM_PLUS_REASONER",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T09:43:56.082085+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0
+  },
+  "loop_a": {
+    "frame_count": 603,
+    "video_duration_seconds": 20.1,
+    "loop_a_wall_seconds": 112.24225789999991,
+    "loop_a_effective_fps": 5.372308177702833,
+    "total_wall_seconds_including_semantic_join": 115.86070870000003,
+    "frame_latency": {
+      "count": 602,
+      "mean": 0.0897807421926845,
+      "p50": 0.08099234999986038,
+      "p95": 0.1648458499998241,
+      "p99": 0.1858938919998718,
+      "max": 0.20203109999965818,
+      "min": 0.04445159999977477
+    },
+    "trigger_attempts": 4,
+    "trigger_dropped_by_semaphore": 0,
+    "semantic_calls": [
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 2.0,
+        "latency_seconds": 8.166622000000189,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "REASONER",
+        "trigger_timestamp_seconds": 2.0,
+        "latency_seconds": 7.830000004105386e-05,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 7.0,
+        "latency_seconds": 14.939292000000023,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "REASONER",
+        "trigger_timestamp_seconds": 7.0,
+        "latency_seconds": 6.77000002724526e-05,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 13.766666666666667,
+        "latency_seconds": 6.549701400000231,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "REASONER",
+        "trigger_timestamp_seconds": 13.766666666666667,
+        "latency_seconds": 8.329999991474324e-05,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 18.866666666666667,
+        "latency_seconds": 6.838392499999827,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "REASONER",
+        "trigger_timestamp_seconds": 18.866666666666667,
+        "latency_seconds": 0.00011339999991832883,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      }
+    ],
+    "semantic_by_stage": {
+      "VLM": {
+        "count": 4,
+        "mean": 9.123501975000067,
+        "p50": 7.502507250000008,
+        "p95": 13.923391500000045,
+        "p99": 14.736111900000026,
+        "max": 14.939292000000023,
+        "min": 6.549701400000231
+      },
+      "REASONER": {
+        "count": 4,
+        "mean": 8.567500003664463e-05,
+        "p50": 8.079999997789855e-05,
+        "p95": 0.00010888499991779098,
+        "p99": 0.00011249699991822126,
+        "max": 0.00011339999991832883,
+        "min": 6.77000002724526e-05
+      }
+    },
+    "failures": {
+      "attempted": 8,
+      "successful": 8,
+      "failed": 0,
+      "timed_out": 0,
+      "dropped": 0,
+      "retried": 0,
+      "records": []
+    }
+  },
+  "resources": {
+    "backend_cpu_percent_mean": 662.8448275862069,
+    "backend_cpu_percent_max": 872.1,
+    "backend_rss_mb_mean": 571.5113483297414,
+    "backend_rss_mb_peak": 602.890625,
+    "ollama_cpu_percent_mean": 68.11120689655172,
+    "ollama_cpu_percent_max": 799.4,
+    "ollama_rss_mb_mean": 746.183767735273,
+    "ollama_rss_mb_peak": 2223.47265625,
+    "sample_count": 232
+  },
+  "benchmark_session_id": "a18b3e50-1ab2-4689-b0a9-87c7222163a8"
+}

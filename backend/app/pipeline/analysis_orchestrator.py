@@ -8,11 +8,15 @@ this module's own background thread (see orchestration_launcher.py). It
 NEVER blocks waiting for Loop B.
 
 Loop B (trigger-only, expensive semantic): VLM -> EvidenceBuilder ->
-Reasoner -> [if INCIDENT] Verifier -> Incident correlation, spawned as its
-OWN separate thread per non-NONE trigger, capped by
-MAX_CONCURRENT_SEMANTIC_ANALYSES (Decision B) via a non-blocking semaphore
-acquire — a trigger that fires while the cap is reached is DROPPED (never
-queued), with a clear log entry.
+Reasoner -> [if INCIDENT] Verifier -> Incident correlation, submitted for
+every non-NONE trigger to a per-session SemanticAdmissionQueue (Decision B,
+Semantic Admission Control phase — see semantic_admission_queue.py) backed
+by MAX_CONCURRENT_SEMANTIC_ANALYSES persistent worker threads and a small
+bounded, freshness-aware pending queue (SEMANTIC_QUEUE_MAX_DEPTH,
+SEMANTIC_QUEUE_STALENESS_SECONDS). Submission is always non-blocking; a
+trigger that cannot be served promptly may be queued briefly, may displace
+an older still-queued trigger, or may ultimately be dropped as stale —
+never silently, always logged.
 
 This module reimplements NO pipeline component's internal logic — every
 step below is a direct call into an existing Phase 5-19 function/class
@@ -22,7 +26,6 @@ COMPOSITION and CONCURRENCY SAFETY, not new algorithms.
 """
 
 import logging
-import threading
 import time
 import uuid
 from collections import deque
@@ -51,6 +54,7 @@ from app.pipeline.reasoner import LLMUnavailableError, Reasoner
 from app.pipeline.risk_score import compute_risk_grid
 from app.pipeline.risk_state import RiskStateMachine, RiskStateResult
 from app.pipeline.roi_selection import select_roi
+from app.pipeline.semantic_admission_queue import SemanticAdmissionQueue
 from app.pipeline.trigger_engine import TriggerDecision, TriggerEngine, TriggerType
 from app.pipeline.verifier import LLMVerificationUnavailableError, Verifier
 from app.pipeline.vision_observation import CompactCrowdMetricsSummary, VisionInput
@@ -120,7 +124,9 @@ def _fresh_status(db: Session, session_id: uuid.UUID) -> SessionStatus | None:
 class AnalysisOrchestrator:
     """Constructed ONCE per session run. Deliberately CHEAP to construct —
     __init__ stores only the session_id and this run's own
-    threading.Semaphore. ALL heavy work (opening the video, constructing
+    SemanticAdmissionQueue (which starts its small, fixed-size worker-thread
+    pool immediately but performs no real I/O itself). ALL heavy work
+    (opening the video, constructing
     the per-session pipeline components — real YOLO model load, real
     Ollama handshakes — and running Loop A) happens inside run(), which is
     the function actually executed ON THE BACKGROUND THREAD (see
@@ -133,12 +139,20 @@ class AnalysisOrchestrator:
 
     def __init__(self, session_id: uuid.UUID) -> None:
         self._session_id = session_id
-        # Decision B: scoped to THIS orchestrator instance, i.e. THIS
-        # session's own Loop A — each concurrently-processing session gets
-        # its own independent cap, matching how every other stateful
-        # component here (Tracker, RiskStateMachine, TriggerEngine, ...)
-        # is already scoped to one session, never shared globally.
-        self._semaphore = threading.Semaphore(settings.MAX_CONCURRENT_SEMANTIC_ANALYSES)
+        # Decision B (Semantic Admission Control phase — REPLACES the prior
+        # bare threading.Semaphore with a bounded, freshness-aware admission
+        # queue; see semantic_admission_queue.py's own module docstring and
+        # DECISIONS.md "Semantic Admission Control"): still scoped to THIS
+        # orchestrator instance, i.e. THIS session's own Loop A — each
+        # concurrently-processing session gets its own independent queue,
+        # matching how every other stateful component here (Tracker,
+        # RiskStateMachine, TriggerEngine, ...) is already scoped to one
+        # session, never shared globally.
+        self._semantic_queue = SemanticAdmissionQueue(
+            max_concurrent=settings.MAX_CONCURRENT_SEMANTIC_ANALYSES,
+            max_queue_depth=settings.SEMANTIC_QUEUE_MAX_DEPTH,
+            staleness_seconds=settings.SEMANTIC_QUEUE_STALENESS_SECONDS,
+        )
 
     def _latest_processing_run(self, db: Session) -> ProcessingRun | None:
         return (
@@ -216,16 +230,18 @@ class AnalysisOrchestrator:
             session.status = SessionStatus.PROCESSING
             db.commit()
 
-            loop_b_threads, was_cancelled = self._run_loop_a(db, session, processing_run)
+            was_cancelled = self._run_loop_a(db, session, processing_run)
 
-            # Decision D: wait for any still-running Loop B thread(s)
-            # BEFORE finalizing — a started evidence/decision chain must
-            # reach its proper conclusion, never be silently abandoned
-            # because Loop A finished (or was cancelled) first. Naturally
-            # bounded by the VLM/LLM/Verifier calls' own configured
-            # timeouts.
-            for thread in loop_b_threads:
-                thread.join()
+            # Decision D (Semantic Admission Control phase: now via
+            # SemanticAdmissionQueue.close() rather than joining a list of
+            # ephemeral threads — see that module's own docstring): wait
+            # for any still-running AND any still-queued (but not yet
+            # stale) Loop B work BEFORE finalizing — a started evidence/
+            # decision chain must reach its proper conclusion, never be
+            # silently abandoned because Loop A finished (or was cancelled)
+            # first. Naturally bounded by the VLM/LLM/Verifier calls' own
+            # configured timeouts.
+            self._semantic_queue.close()
 
             terminal_run_status = ProcessingRunStatus.CANCELLED if was_cancelled else ProcessingRunStatus.COMPLETED
             terminal_session_status = SessionStatus.CANCELLED if was_cancelled else SessionStatus.COMPLETED
@@ -293,8 +309,10 @@ class AnalysisOrchestrator:
 
     def _run_loop_a(
         self, db: Session, session: AnalysisSession, processing_run: ProcessingRun
-    ) -> tuple[list[threading.Thread], bool]:
-        """Returns (spawned Loop B threads, was_cancelled)."""
+    ) -> bool:
+        """Returns was_cancelled. Loop B work is submitted to
+        self._semantic_queue (never joined/tracked here directly — see
+        run()'s own call to self._semantic_queue.close())."""
         video = db.get(VideoAsset, session.video_id)
         if video is None:
             raise VideoPreconditionError(f"VideoAsset {session.video_id} not found")
@@ -348,7 +366,6 @@ class AnalysisOrchestrator:
         )
         frame_history: deque[Frame] = deque(maxlen=context_frame_buffer_size)
 
-        loop_b_threads: list[threading.Thread] = []
         prev_frame: Frame | None = None
         prev_risk_result: RiskStateResult | None = None
         last_heatmap_timestamp: float | None = None
@@ -430,14 +447,12 @@ class AnalysisOrchestrator:
                             and len(frame_history) > 0
                         ):
                             context_frame = frame_history[0]
-                        spawned = self._maybe_spawn_loop_b(
+                        self._maybe_spawn_loop_b(
                             session.id, builder, vision_model, reasoner, verifier,
                             frame, crowd_metrics, risk_result, trigger_decision,
                             crowd_grid, frame_width, frame_height,
                             acute_hazard_signal, context_frame,
                         )
-                        if spawned is not None:
-                            loop_b_threads.append(spawned)
 
                     prev_risk_result = risk_result
 
@@ -517,7 +532,7 @@ class AnalysisOrchestrator:
             processing_run.last_progress_update_at = _now()
             db.commit()
 
-        return loop_b_threads, was_cancelled
+        return was_cancelled
 
     def _maybe_spawn_loop_b(
         self,
@@ -535,19 +550,14 @@ class AnalysisOrchestrator:
         frame_height: int,
         acute_hazard_signal: AcuteHazardSignal | None,
         context_frame: Frame | None,
-    ) -> threading.Thread | None:
-        if not self._semaphore.acquire(blocking=False):
-            # Decision B: DROPPED, not queued — always logged with the
-            # trigger's own reason/timestamp, never silently discarded.
-            logger.warning(
-                "AnalysisOrchestrator: Loop B DROPPED for session_id=%s "
-                "(MAX_CONCURRENT_SEMANTIC_ANALYSES=%d already reached) — "
-                "trigger_type=%s reason=%r timestamp=%.2fs",
-                session_id, settings.MAX_CONCURRENT_SEMANTIC_ANALYSES,
-                trigger_decision.trigger_type.value, trigger_decision.reason,
-                trigger_decision.timestamp_seconds,
-            )
-            return None
+    ) -> None:
+        # Decision B (Semantic Admission Control phase): admission is now
+        # delegated entirely to self._semantic_queue — submission itself is
+        # ALWAYS accepted (never blocks Loop A) and is non-blocking; the
+        # queue internally decides run-immediately vs. wait-behind-an-
+        # active-task vs. evict-a-staler-queued-item vs. eventually-
+        # drop-as-stale, all logged with the trigger's own reason/timestamp
+        # inside semantic_admission_queue.py, never silently discarded.
 
         # Acute-Hazard Trigger Phase (decision 4, ROI selection): an
         # ACUTE_HAZARD trigger localizes ROI to where the ANOMALY is (the
@@ -577,18 +587,18 @@ class AnalysisOrchestrator:
             density_confidence=crowd_metrics.core.density.estimation_confidence,
         )
 
-        thread = threading.Thread(
-            target=self._run_loop_b,
-            args=(
+        self._semantic_queue.submit(
+            run=lambda: self._run_loop_b(
                 session_id, builder, vision_model, reasoner, verifier,
                 frame, crowd_metrics, risk_result, trigger_decision, roi_bbox, compact_metrics,
                 acute_hazard_signal, context_frame,
             ),
-            name=f"loop-b-{session_id}-{trigger_decision.frame_number}",
-            daemon=False,
+            trigger_timestamp_seconds=trigger_decision.timestamp_seconds,
+            label=(
+                f"{trigger_decision.trigger_type.value}@{trigger_decision.timestamp_seconds:.2f}s "
+                f"session={session_id}"
+            ),
         )
-        thread.start()
-        return thread
 
     def _run_loop_b(
         self,
@@ -606,10 +616,11 @@ class AnalysisOrchestrator:
         acute_hazard_signal: AcuteHazardSignal | None,
         context_frame: Frame | None,
     ) -> None:
-        """Runs on its OWN thread, spawned by _maybe_spawn_loop_b. Decision
-        C: constructs its OWN fresh DB session — never reuses Loop A's.
-        Any exception here is caught and logged; it must never crash Loop
-        A (which has already moved on) or leave the semaphore acquired."""
+        """Runs on one of self._semantic_queue's own persistent worker
+        threads (submitted via _maybe_spawn_loop_b). Decision C: constructs
+        its OWN fresh DB session — never reuses Loop A's. Any exception
+        here is caught and logged; it must never crash Loop A (which has
+        already moved on) or leave the worker thread that ran it stuck."""
         db = database.SessionLocal()
         try:
             vision_input = VisionInput(
@@ -683,4 +694,3 @@ class AnalysisOrchestrator:
             )
         finally:
             db.close()
-            self._semaphore.release()

@@ -579,10 +579,17 @@ def test_terminal_status_write_durable_outage_logs_critical_and_leaves_run_unres
     assert fresh_session.status == SessionStatus.PROCESSING
 
 
-def test_loop_b_second_trigger_dropped_not_queued_when_cap_reached(
-    db_session, test_user, monkeypatch, caplog, make_processable_video
+def test_loop_b_second_trigger_queues_third_evicts_oldest_when_cap_reached(
+    db_session, test_user, monkeypatch, make_processable_video
 ):
+    """Semantic Admission Control phase: REPLACES the old "drop, never
+    queue" behavior. With MAX_CONCURRENT_SEMANTIC_ANALYSES=1 and
+    SEMANTIC_QUEUE_MAX_DEPTH=2, a second trigger firing while the first is
+    still active must now be QUEUED (not dropped) — and only once the
+    bounded queue itself is at capacity does a newer trigger evict an
+    older, still-queued one (never the currently-active task)."""
     monkeypatch.setattr(settings, "MAX_CONCURRENT_SEMANTIC_ANALYSES", 1)
+    monkeypatch.setattr(settings, "SEMANTIC_QUEUE_MAX_DEPTH", 1)
     video = make_processable_video()
     frame, crowd_metrics, risk_result = _real_crowd_metrics_pair(video)
     session = session_service.create_session(db_session, video.id, test_user[0].id)
@@ -593,32 +600,118 @@ def test_loop_b_second_trigger_dropped_not_queued_when_cap_reached(
 
     entered = threading.Event()
     release = threading.Event()
+    ran: list[str] = []
+
+    call_index = {"n": 0}
 
     def fake_run_loop_b(self, *args, **kwargs):
-        entered.set()
-        release.wait(timeout=10)
+        call_index["n"] += 1
+        if call_index["n"] == 1:
+            entered.set()
+            release.wait(timeout=10)
+        ran.append(f"call-{call_index['n']}")
 
     monkeypatch.setattr(AnalysisOrchestrator, "_run_loop_b", fake_run_loop_b)
 
     orchestrator = AnalysisOrchestrator(session.id)
 
-    first_thread = orchestrator._maybe_spawn_loop_b(
+    orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
         trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
-    assert first_thread is not None
     assert entered.wait(timeout=5), "first Loop B invocation never started"
 
-    caplog.set_level(logging.WARNING)
-    second_thread = orchestrator._maybe_spawn_loop_b(
+    # Second trigger while the first is still active: must be QUEUED, not dropped.
+    orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
         trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
-    assert second_thread is None, "second trigger should be DROPPED, not queued, while the cap is reached"
-    assert any("DROPPED" in record.message for record in caplog.records)
+    snapshot = orchestrator._semantic_queue.metrics_snapshot()
+    assert snapshot["queue_depth"] == 1
+    assert snapshot["dropped_capacity_total"] == 0
+
+    # Third trigger: queue (depth 1) already full — evicts the second, not the active first.
+    orchestrator._maybe_spawn_loop_b(
+        session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
+        trigger_decision, crowd_grid, video.width, video.height, None, None,
+    )
+    snapshot = orchestrator._semantic_queue.metrics_snapshot()
+    assert snapshot["dropped_capacity_total"] == 1
 
     release.set()
-    first_thread.join(timeout=10)
+    orchestrator._semantic_queue.close(timeout=10)
+
+    assert ran == ["call-1", "call-2"], "exactly 2 of the 3 submitted triggers should have run (the middle one evicted)"
+
+
+def test_run_waits_for_queued_semantic_work_before_reaching_completed(
+    db_session, test_user, monkeypatch, make_processable_video,
+):
+    """Phase E, item 8 (Semantic Admission Control phase): a trigger that
+    gets QUEUED (not immediately active, because MAX_CONCURRENT_SEMANTIC_
+    ANALYSES=1 is already busy) must still complete — and be reflected in
+    the count of finished work — BEFORE AnalysisSession/ProcessingRun
+    reach COMPLETED, exactly like the pre-existing guarantee (Decision D)
+    already gave actively-running Loop B work."""
+    monkeypatch.setattr(settings, "MAX_CONCURRENT_SEMANTIC_ANALYSES", 1)
+    monkeypatch.setattr(settings, "SEMANTIC_QUEUE_MAX_DEPTH", 2)
+    monkeypatch.setattr(settings, "SEMANTIC_QUEUE_STALENESS_SECONDS", 60.0)
+
+    video = make_processable_video(num_frames=10)
+    session = session_service.create_session(db_session, video.id, test_user[0].id)
+    session_service.start_session(db_session, session)
+
+    # Force TriggerEngine to fire an OPERATOR trigger (the established
+    # cooldown-exempt "real trigger" technique already used by this file's
+    # other Loop B tests) on exactly the 2nd and 3rd evaluate() calls —
+    # the 1st Loop B call blocks (below), so the 2nd is genuinely QUEUED
+    # behind it, not run immediately.
+    real_evaluate = TriggerEngine.evaluate
+    call_count = {"n": 0}
+
+    def _forced_evaluate(self, crowd_metrics, risk_result, operator_requested=False, acute_hazard_signal=None):
+        call_count["n"] += 1
+        forced = call_count["n"] in (2, 3)
+        return real_evaluate(
+            self, crowd_metrics, risk_result,
+            operator_requested=forced, acute_hazard_signal=acute_hazard_signal,
+        )
+
+    monkeypatch.setattr(TriggerEngine, "evaluate", _forced_evaluate)
+
+    release = threading.Event()
+    started_first = threading.Event()
+    completed_calls: list[int] = []
+    loop_b_call_n = {"n": 0}
+
+    def fake_run_loop_b(self, *args, **kwargs):
+        loop_b_call_n["n"] += 1
+        this_call = loop_b_call_n["n"]
+        if this_call == 1:
+            started_first.set()
+            release.wait(timeout=10)
+        completed_calls.append(this_call)
+
+    monkeypatch.setattr(AnalysisOrchestrator, "_run_loop_b", fake_run_loop_b)
+
+    orchestrator = AnalysisOrchestrator(session.id)
+    thread = threading.Thread(target=orchestrator.run, daemon=False)
+    thread.start()
+
+    assert started_first.wait(timeout=10), "first Loop B call never started"
+    time.sleep(0.3)  # let Loop A (fast, tiny synthetic clip) finish submitting the 2nd trigger
+    release.set()
+    thread.join(timeout=30)
+
+    assert completed_calls == [1, 2], (
+        "both the active AND the queued trigger must have completed before "
+        f"run() returned — got {completed_calls}"
+    )
+
+    run = _latest_run(db_session, session.id)
+    fresh_session = db_session.get(AnalysisSession, session.id)
+    assert run.status == ProcessingRunStatus.COMPLETED
+    assert fresh_session.status == SessionStatus.COMPLETED
 
 
 def test_loop_b_uses_its_own_fresh_db_session_never_loop_as(
@@ -644,11 +737,11 @@ def test_loop_b_uses_its_own_fresh_db_session_never_loop_as(
     monkeypatch.setattr(AnalysisOrchestrator, "_run_loop_b", spying_run_loop_b)
 
     orchestrator = AnalysisOrchestrator(session.id)
-    thread = orchestrator._maybe_spawn_loop_b(
+    orchestrator._maybe_spawn_loop_b(
         session.id, builder, None, None, None, frame, crowd_metrics, risk_result,
         trigger_decision, crowd_grid, video.width, video.height, None, None,
     )
-    thread.join(timeout=10)
+    orchestrator._semantic_queue.close(timeout=10)
 
     assert len(captured_session_ids) == 1
     # Decision C: the Loop B thread's session must be a GENUINELY DIFFERENT

@@ -1,0 +1,78 @@
+{
+  "scenario": "FINAL_HIGH_FREQUENCY_VALIDATION",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T18:03:23.578711+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0,
+    "ollama_num_thread": 4,
+    "dis_preset": "fast",
+    "semantic_queue_max_depth": 1,
+    "semantic_queue_staleness_seconds": 30.0
+  },
+  "prior_high_frequency_result_for_comparison": {
+    "note": "from admission_queue_old_vs_new.json's own NEW/HIGH entry \u2014 depth=2, OLLAMA_NUM_THREAD=None",
+    "frame_latency_max_seconds": 888.8748257999996,
+    "total_wall_seconds": 1567.2040068999995,
+    "queue_wait_seconds_max": 945.3590000000004
+  },
+  "final_configuration_result": {
+    "trigger_interval_seconds": 3.0,
+    "total_wall_seconds": 359.25819870000123,
+    "frame_latency": {
+      "count": 601,
+      "mean": 0.20253530482529555,
+      "p50": 0.19520170000032522,
+      "p95": 0.25883049999538343,
+      "p99": 0.3557650000002468,
+      "max": 0.4471828000023379,
+      "min": 0.1442520999989938
+    },
+    "resources": {
+      "backend_cpu_percent_mean": 251.59899856938486,
+      "backend_cpu_percent_max": 811.5,
+      "backend_rss_mb_mean": 574.656434415236,
+      "backend_rss_mb_peak": 684.7421875,
+      "ollama_cpu_percent_mean": 102.96693548387097,
+      "ollama_cpu_percent_max": 436.9,
+      "ollama_rss_mb_mean": 1442.2720655871976,
+      "ollama_rss_mb_peak": 5723.02734375,
+      "sample_count": 699
+    },
+    "semantic_queue_metrics": {
+      "enqueued_total": 11,
+      "dequeued_total": 3,
+      "dropped_capacity_total": 7,
+      "dropped_stale_total": 1,
+      "completed_total": 3,
+      "failed_total": 0,
+      "active_count": 0,
+      "queue_depth": 0,
+      "queue_wait_seconds_mean": 59.996250000000146,
+      "queue_wait_seconds_max": 231.73500000000058,
+      "queue_wait_seconds_count": 4
+    },
+    "evidence_package_count": 3,
+    "decision_count": 3
+  }
+}

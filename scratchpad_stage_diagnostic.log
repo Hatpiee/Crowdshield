@@ -1,0 +1,198 @@
+{
+  "scenario": "LOOP_A_STAGE_DIAGNOSTIC",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T11:03:09.038729+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0
+  },
+  "loop_a": {
+    "frame_count": 603,
+    "video_duration_seconds": 20.1,
+    "loop_a_wall_seconds": 204.98198839999895,
+    "loop_a_effective_fps": 2.941721878623376,
+    "total_wall_seconds_including_semantic_join": 225.60202369999934,
+    "frame_latency": {
+      "count": 602,
+      "mean": 0.21868016860465458,
+      "p50": 0.09252910000031989,
+      "p95": 0.1378988949998527,
+      "p99": 0.19872323199993847,
+      "max": 74.50174850000076,
+      "min": 0.04898510000020906
+    },
+    "trigger_attempts": 4,
+    "trigger_dropped_by_semaphore": 0,
+    "semantic_calls": [
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 2.0,
+        "latency_seconds": 36.40143700000044,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 7.0,
+        "latency_seconds": 22.02382369999941,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 13.766666666666667,
+        "latency_seconds": 27.589822500000082,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      },
+      {
+        "stage": "VLM",
+        "trigger_timestamp_seconds": 18.866666666666667,
+        "latency_seconds": 24.221669999998994,
+        "success": true,
+        "timed_out": false,
+        "error": null
+      }
+    ],
+    "semantic_by_stage": {
+      "VLM": {
+        "count": 4,
+        "mean": 27.559188299999732,
+        "p50": 25.905746249999538,
+        "p95": 35.07969482500039,
+        "p99": 36.137088565000425,
+        "max": 36.40143700000044,
+        "min": 22.02382369999941
+      },
+      "REASONER": {
+        "count": 0,
+        "mean": null,
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null,
+        "min": null
+      }
+    },
+    "failures": {
+      "attempted": 4,
+      "successful": 4,
+      "failed": 0,
+      "timed_out": 0,
+      "dropped": 0,
+      "retried": 0,
+      "records": []
+    }
+  },
+  "resources": {
+    "backend_cpu_percent_mean": 546.3454849498328,
+    "backend_cpu_percent_max": 859.4,
+    "backend_rss_mb_mean": 570.7480795359531,
+    "backend_rss_mb_peak": 596.8359375,
+    "ollama_cpu_percent_mean": 180.80808314087759,
+    "ollama_cpu_percent_max": 825.0,
+    "ollama_rss_mb_mean": 638.5615888423788,
+    "ollama_rss_mb_peak": 2247.90625,
+    "sample_count": 299
+  },
+  "stage_latency": {
+    "detection": {
+      "count": 603,
+      "mean": 0.11892994179107212,
+      "p50": 0.08427019999908225,
+      "p95": 0.28242123999989405,
+      "p99": 0.5318262100002176,
+      "max": 1.9660617999998067,
+      "min": 0.052176999999574036
+    },
+    "tracking": {
+      "count": 603,
+      "mean": 0.0006977990050085098,
+      "p50": 0.0005049999999755528,
+      "p95": 0.001592729999538278,
+      "p99": 0.0026842819994271913,
+      "max": 0.018053000001600594,
+      "min": 8.750000051804818e-05
+    },
+    "optical_flow": {
+      "count": 602,
+      "mean": 0.1654015176079709,
+      "p50": 0.03950070000064443,
+      "p95": 0.05873789499910341,
+      "p99": 0.0759693440002775,
+      "max": 74.34115250000104,
+      "min": 0.021210299999438575
+    },
+    "crowd_metrics": {
+      "count": 602,
+      "mean": 0.049050316279054006,
+      "p50": 0.04645375000018248,
+      "p95": 0.0788383250005608,
+      "p99": 0.1138510230005341,
+      "max": 0.14573640000162413,
+      "min": 0.022749300000214134
+    },
+    "acute_hazard": {
+      "count": 602,
+      "mean": 0.003946246511675606,
+      "p50": 0.00367034999999305,
+      "p95": 0.006524989999252279,
+      "p99": 0.008652003999013688,
+      "max": 0.014520800001264433,
+      "min": 0.0021844000002602115
+    },
+    "risk_state": {
+      "count": 602,
+      "mean": 2.1672425226102843e-05,
+      "p50": 1.8599999748403206e-05,
+      "p95": 4.267999956937271e-05,
+      "p99": 7.113400008165632e-05,
+      "max": 9.59999997576233e-05,
+      "min": 1.0900001143454574e-05
+    },
+    "trigger_evaluation": {
+      "count": 602,
+      "mean": 7.66029900107266e-06,
+      "p50": 6.749999556632247e-06,
+      "p95": 1.3985001078253825e-05,
+      "p99": 2.3398999928758712e-05,
+      "max": 4.489999992074445e-05,
+      "min": 4.19999923906289e-06
+    },
+    "semantic_admission_submit": {
+      "count": 602,
+      "mean": 1.5040033257268972e-05,
+      "p50": 2.200000380980782e-06,
+      "p95": 4.600000465870835e-06,
+      "p99": 1.783599987902568e-05,
+      "max": 0.0024566000010963762,
+      "min": 1.4999986888142303e-06
+    }
+  },
+  "diagnostic_note": "stage_latency's own 'detection'/'tracking' keys are NOT part of loop_a.frame_latency (which starts timing AFTER detect+track, see module docstring) \u2014 compare against the SUM of optical_flow+crowd_metrics+acute_hazard+risk_state+trigger_evaluation instead for a like-for-like check against frame_latency's own mean/max.",
+  "post_detect_stage_sum_of_means": 0.21842741312292768,
+  "whole_frame_latency_mean_for_comparison": 0.21868016860465458
+}

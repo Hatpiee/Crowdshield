@@ -1,0 +1,703 @@
+{
+  "scenario": "OLLAMA_THREAD_CAP_SWEEP",
+  "video": {
+    "path": "C:\\Dev\\Crowdshield\\storage\\videos\\779fa633-d5f6-4e49-9045-9fd04e691ddb.mp4",
+    "sha256": "b7188078f65d20268e5a2afb35a997e7080ac1d29210f8310b7971cc9beead49",
+    "duration_seconds": 20.1,
+    "fps": 30.0,
+    "frame_count": 603,
+    "width": 576,
+    "height": 720
+  },
+  "environment": {
+    "timestamp_utc": "2026-08-22T17:55:14.291317+00:00",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python_version": "3.11.9",
+    "cpu_model": "AMD64 Family 25 Model 117 Stepping 2, AuthenticAMD",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "total_ram_gb": 31.28,
+    "ollama_version": "ollama version is 0.32.15",
+    "vlm_model": "minicpm-v4.6:q4_K_M",
+    "llm_model": "qwen3:8b",
+    "max_concurrent_semantic_analyses": 1,
+    "vlm_request_timeout_seconds": 60.0,
+    "llm_request_timeout_seconds": 210.0,
+    "verifier_request_timeout_seconds": 260.0,
+    "acute_hazard_cooldown_seconds": 5.0,
+    "ollama_num_thread": null,
+    "dis_preset": "fast",
+    "semantic_queue_max_depth": 1,
+    "semantic_queue_staleness_seconds": 30.0
+  },
+  "configs": {
+    "unrestricted": {
+      "label": "unrestricted",
+      "ollama_num_thread": null,
+      "dis_preset": "fast",
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 173.16422850000163,
+        "loop_a_effective_fps": 3.482243447294857,
+        "total_wall_seconds_including_semantic_join": 193.35738929999934,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.10743070797335376,
+          "p50": 0.0938995500018791,
+          "p95": 0.19624081000038118,
+          "p99": 0.21947134600133725,
+          "max": 0.43523740000091493,
+          "min": 0.053280300002370495
+        },
+        "trigger_attempts": 4,
+        "trigger_dropped_by_semaphore": 0,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 39.8647990999998,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 32.36070489999838,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 39.957160199999635,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 18.866666666666667,
+            "latency_seconds": 26.625670499997796,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 4,
+            "mean": 34.7020836749989,
+            "p50": 36.11275199999909,
+            "p95": 39.94330603499966,
+            "p99": 39.95438936699964,
+            "max": 39.957160199999635,
+            "min": 26.625670499997796
+          },
+          "REASONER": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "min": null
+          }
+        },
+        "failures": {
+          "attempted": 4,
+          "successful": 4,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 0,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 474.11879895561356,
+        "backend_cpu_percent_max": 884.4,
+        "backend_rss_mb_mean": 568.822270724543,
+        "backend_rss_mb_peak": 600.39453125,
+        "ollama_cpu_percent_mean": 167.8968525179856,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 646.2617784678507,
+        "ollama_rss_mb_peak": 2222.16015625,
+        "sample_count": 383
+      },
+      "stage_latency": {
+        "detection": {
+          "count": 603,
+          "mean": 0.17698832852393914,
+          "p50": 0.09298710000075516,
+          "p95": 0.47421841999785097,
+          "p99": 1.1251066899981383,
+          "max": 2.5919467999992776,
+          "min": 0.06187409999984084
+        },
+        "tracking": {
+          "count": 603,
+          "mean": 0.0007705152570549939,
+          "p50": 0.000583500001084758,
+          "p95": 0.0018988800027727845,
+          "p99": 0.004268968000251348,
+          "max": 0.011193099999218248,
+          "min": 0.000103599999420112
+        },
+        "optical_flow": {
+          "count": 602,
+          "mean": 0.04570735348836834,
+          "p50": 0.039916549998451956,
+          "p95": 0.07271693500169925,
+          "p99": 0.08793242399864541,
+          "max": 0.3849068999988958,
+          "min": 0.0193001000006916
+        },
+        "crowd_metrics": {
+          "count": 602,
+          "mean": 0.056817789368744154,
+          "p50": 0.05027965000044787,
+          "p95": 0.11124915499749459,
+          "p99": 0.13100029399767665,
+          "max": 0.14188060000014957,
+          "min": 0.02409329999863985
+        },
+        "acute_hazard": {
+          "count": 602,
+          "mean": 0.004551032558192311,
+          "p50": 0.003963050001402735,
+          "p95": 0.008093894999728943,
+          "p99": 0.012158366998519344,
+          "max": 0.016993399996863445,
+          "min": 0.0025656999969214667
+        },
+        "risk_state": {
+          "count": 602,
+          "mean": 2.534501658845577e-05,
+          "p50": 2.0299998141126707e-05,
+          "p95": 5.103500334371338e-05,
+          "p99": 7.774999943649169e-05,
+          "max": 0.0001626999983272981,
+          "min": 1.330000304733403e-05
+        },
+        "trigger_evaluation": {
+          "count": 602,
+          "mean": 1.091279071176338e-05,
+          "p50": 8.499999239575118e-06,
+          "p95": 2.299500065419124e-05,
+          "p99": 3.429199921811233e-05,
+          "max": 0.0002491999985068105,
+          "min": 5.699999746866524e-06
+        },
+        "semantic_admission_submit": {
+          "count": 602,
+          "mean": 1.4674086394679942e-05,
+          "p50": 2.2000021999701858e-06,
+          "p95": 5.000001510779839e-06,
+          "p99": 1.5637999495083987e-05,
+          "max": 0.0019499000009091105,
+          "min": 1.3999997463542968e-06
+        }
+      }
+    },
+    "num_thread=4": {
+      "label": "num_thread=4",
+      "ollama_num_thread": 4,
+      "dis_preset": "fast",
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 115.66403830000127,
+        "loop_a_effective_fps": 5.213374950959095,
+        "total_wall_seconds_including_semantic_join": 125.23462790000121,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.0976417262458942,
+          "p50": 0.0953970999980811,
+          "p95": 0.12274554000032364,
+          "p99": 0.20315861200004293,
+          "max": 0.3421760999990511,
+          "min": 0.045422199997119606
+        },
+        "trigger_attempts": 4,
+        "trigger_dropped_by_semaphore": 2,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 55.64843210000254,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 43.96504289999575,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 2,
+            "mean": 49.806737499999144,
+            "p50": 49.806737499999144,
+            "p95": 55.0642626400022,
+            "p99": 55.53159820800247,
+            "max": 55.64843210000254,
+            "min": 43.96504289999575
+          },
+          "REASONER": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "min": null
+          }
+        },
+        "failures": {
+          "attempted": 2,
+          "successful": 2,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 2,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 680.3622950819672,
+        "backend_cpu_percent_max": 893.8,
+        "backend_rss_mb_mean": 598.8540599385246,
+        "backend_rss_mb_peak": 613.21484375,
+        "ollama_cpu_percent_mean": 99.65800273597812,
+        "ollama_cpu_percent_max": 412.6,
+        "ollama_rss_mb_mean": 658.9065118416553,
+        "ollama_rss_mb_peak": 2190.46484375,
+        "sample_count": 244
+      },
+      "stage_latency": {
+        "detection": {
+          "count": 603,
+          "mean": 0.09203952321715306,
+          "p50": 0.0853553000051761,
+          "p95": 0.13301288000147907,
+          "p99": 0.20301531200384504,
+          "max": 0.5541989999983343,
+          "min": 0.06458079999720212
+        },
+        "tracking": {
+          "count": 603,
+          "mean": 0.0006601053068194628,
+          "p50": 0.0005507000023499131,
+          "p95": 0.0015191999991657212,
+          "p99": 0.0019178200040187226,
+          "max": 0.002190100000007078,
+          "min": 9.750000026542693e-05
+        },
+        "optical_flow": {
+          "count": 602,
+          "mean": 0.04206225033238636,
+          "p50": 0.040528350000386126,
+          "p95": 0.05215420000131417,
+          "p99": 0.07090242300109822,
+          "max": 0.29371670000546146,
+          "min": 0.01909210000303574
+        },
+        "crowd_metrics": {
+          "count": 602,
+          "mean": 0.051240743521684694,
+          "p50": 0.049431399998866254,
+          "p95": 0.06786045499793542,
+          "p99": 0.12003464299901682,
+          "max": 0.13851570000406355,
+          "min": 0.022468300001492025
+        },
+        "acute_hazard": {
+          "count": 602,
+          "mean": 0.00400886827256452,
+          "p50": 0.0037835999974049628,
+          "p95": 0.005482844996367929,
+          "p99": 0.009090121998742698,
+          "max": 0.01782840000669239,
+          "min": 0.0025128000052063726
+        },
+        "risk_state": {
+          "count": 602,
+          "mean": 2.342159487577805e-05,
+          "p50": 1.9400002202019095e-05,
+          "p95": 4.9194996245205394e-05,
+          "p99": 6.748600462742617e-05,
+          "max": 0.00011390000145183876,
+          "min": 1.200000406242907e-05
+        },
+        "trigger_evaluation": {
+          "count": 602,
+          "mean": 9.364617955930874e-06,
+          "p50": 7.90000194683671e-06,
+          "p95": 1.9194993728888215e-05,
+          "p99": 2.949299901956693e-05,
+          "max": 6.330000178422779e-05,
+          "min": 4.699999408330768e-06
+        },
+        "semantic_admission_submit": {
+          "count": 602,
+          "mean": 9.973920285941544e-06,
+          "p50": 2.1000014385208488e-06,
+          "p95": 4.500001341511961e-06,
+          "p99": 9.490006777923563e-06,
+          "max": 0.002845600000000559,
+          "min": 1.2000018614344299e-06
+        }
+      }
+    },
+    "num_thread=8": {
+      "label": "num_thread=8",
+      "ollama_num_thread": 8,
+      "dis_preset": "fast",
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 146.63296609999816,
+        "loop_a_effective_fps": 4.112308548602752,
+        "total_wall_seconds_including_semantic_join": 166.86877059999824,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.10315966710964689,
+          "p50": 0.09388439999747789,
+          "p95": 0.14834066000476007,
+          "p99": 0.21110301599714149,
+          "max": 0.28035029999591643,
+          "min": 0.05319840000447584
+        },
+        "trigger_attempts": 4,
+        "trigger_dropped_by_semaphore": 0,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 38.12036710000393,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 23.178568299998005,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 30.794028700001945,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 18.866666666666667,
+            "latency_seconds": 26.6528896000018,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 4,
+            "mean": 29.68646342500142,
+            "p50": 28.723459150001872,
+            "p95": 37.02141634000363,
+            "p99": 37.900576948003874,
+            "max": 38.12036710000393,
+            "min": 23.178568299998005
+          },
+          "REASONER": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "min": null
+          }
+        },
+        "failures": {
+          "attempted": 4,
+          "successful": 4,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 0,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 518.6123456790124,
+        "backend_cpu_percent_max": 878.1,
+        "backend_rss_mb_mean": 605.1553698881173,
+        "backend_rss_mb_peak": 627.20703125,
+        "ollama_cpu_percent_mean": 169.36851851851853,
+        "ollama_cpu_percent_max": 825.0,
+        "ollama_rss_mb_mean": 693.9478483474794,
+        "ollama_rss_mb_peak": 2276.48828125,
+        "sample_count": 324
+      },
+      "stage_latency": {
+        "detection": {
+          "count": 603,
+          "mean": 0.13741511243778634,
+          "p50": 0.09236240000609541,
+          "p95": 0.2984477100006188,
+          "p99": 0.49397237600060245,
+          "max": 0.809925800000201,
+          "min": 0.06589170000370359
+        },
+        "tracking": {
+          "count": 603,
+          "mean": 0.0007450761196448137,
+          "p50": 0.000556399994820822,
+          "p95": 0.001857399997970787,
+          "p99": 0.003152236000023552,
+          "max": 0.009217200000421144,
+          "min": 9.100000170292333e-05
+        },
+        "optical_flow": {
+          "count": 602,
+          "mean": 0.043995777907069857,
+          "p50": 0.03964779999660095,
+          "p95": 0.06448459999810435,
+          "p99": 0.08285604599310319,
+          "max": 0.20984260000113863,
+          "min": 0.02085110000189161
+        },
+        "crowd_metrics": {
+          "count": 602,
+          "mean": 0.054448177242407726,
+          "p50": 0.049715050001395866,
+          "p95": 0.08705603999587762,
+          "p99": 0.12448911299856266,
+          "max": 0.14612710000074003,
+          "min": 0.028942000004462898
+        },
+        "acute_hazard": {
+          "count": 602,
+          "mean": 0.00437630116282533,
+          "p50": 0.0038739499977964442,
+          "p95": 0.007303979999051078,
+          "p99": 0.011708689999650242,
+          "max": 0.01594650000333786,
+          "min": 0.0026218999992124736
+        },
+        "risk_state": {
+          "count": 602,
+          "mean": 2.6103820666466587e-05,
+          "p50": 1.9899998733308166e-05,
+          "p95": 6.030000076862052e-05,
+          "p99": 9.945500089088459e-05,
+          "max": 0.00027409999893279746,
+          "min": 1.1399999493733048e-05
+        },
+        "trigger_evaluation": {
+          "count": 602,
+          "mean": 1.0038371939205122e-05,
+          "p50": 7.700000423938036e-06,
+          "p95": 2.316999489266887e-05,
+          "p99": 4.251099693647128e-05,
+          "max": 0.00010060000204248354,
+          "min": 4.800000169780105e-06
+        },
+        "semantic_admission_submit": {
+          "count": 602,
+          "mean": 1.4001328891268514e-05,
+          "p50": 2.2000021999701858e-06,
+          "p95": 6.194996240083122e-06,
+          "p99": 1.2881996372016163e-05,
+          "max": 0.0017918000012286939,
+          "min": 1.4999968698248267e-06
+        }
+      }
+    },
+    "num_thread=12": {
+      "label": "num_thread=12",
+      "ollama_num_thread": 12,
+      "dis_preset": "fast",
+      "loop_a": {
+        "frame_count": 603,
+        "video_duration_seconds": 20.1,
+        "loop_a_wall_seconds": 186.09949710000365,
+        "loop_a_effective_fps": 3.240202200417382,
+        "total_wall_seconds_including_semantic_join": 188.81067910000274,
+        "frame_latency": {
+          "count": 602,
+          "mean": 0.09762986760787472,
+          "p50": 0.08372199999939767,
+          "p95": 0.1852732849984022,
+          "p99": 0.2367309639974701,
+          "max": 0.7398253999999724,
+          "min": 0.05055930000526132
+        },
+        "trigger_attempts": 4,
+        "trigger_dropped_by_semaphore": 0,
+        "semantic_calls": [
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 2.0,
+            "latency_seconds": 32.54904080000415,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 7.0,
+            "latency_seconds": 26.523743099998683,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 13.766666666666667,
+            "latency_seconds": 26.55104019999999,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          },
+          {
+            "stage": "VLM",
+            "trigger_timestamp_seconds": 18.866666666666667,
+            "latency_seconds": 25.80319039999449,
+            "success": true,
+            "timed_out": false,
+            "error": null
+          }
+        ],
+        "semantic_by_stage": {
+          "VLM": {
+            "count": 4,
+            "mean": 27.856753624999328,
+            "p50": 26.537391649999336,
+            "p95": 31.64934071000352,
+            "p99": 32.369100782004026,
+            "max": 32.54904080000415,
+            "min": 25.80319039999449
+          },
+          "REASONER": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "min": null
+          }
+        },
+        "failures": {
+          "attempted": 4,
+          "successful": 4,
+          "failed": 0,
+          "timed_out": 0,
+          "dropped": 0,
+          "retried": 0,
+          "records": []
+        }
+      },
+      "resources": {
+        "backend_cpu_percent_mean": 494.55421348314604,
+        "backend_cpu_percent_max": 870.8,
+        "backend_rss_mb_mean": 581.0736372015449,
+        "backend_rss_mb_peak": 599.8984375,
+        "ollama_cpu_percent_mean": 181.9003745318352,
+        "ollama_cpu_percent_max": 1166.7,
+        "ollama_rss_mb_mean": 698.9415781542604,
+        "ollama_rss_mb_peak": 2265.03125,
+        "sample_count": 356
+      },
+      "stage_latency": {
+        "detection": {
+          "count": 603,
+          "mean": 0.20769573963519888,
+          "p50": 0.07372439999744529,
+          "p95": 0.7741032900004928,
+          "p99": 2.7562523000019437,
+          "max": 4.5111307999977726,
+          "min": 0.06416570000146748
+        },
+        "tracking": {
+          "count": 603,
+          "mean": 0.0007268800996029657,
+          "p50": 0.0005220000020926818,
+          "p95": 0.0015262999964761543,
+          "p99": 0.0035435019993747168,
+          "max": 0.020579399999405723,
+          "min": 8.769999840296805e-05
+        },
+        "optical_flow": {
+          "count": 602,
+          "mean": 0.0422365431893989,
+          "p50": 0.03708360000382527,
+          "p95": 0.06894679500328488,
+          "p99": 0.10031010099912249,
+          "max": 0.6053117999981623,
+          "min": 0.017415099995560013
+        },
+        "crowd_metrics": {
+          "count": 602,
+          "mean": 0.051027529568173455,
+          "p50": 0.043595099999947706,
+          "p95": 0.10758400000486283,
+          "p99": 0.14291175899634254,
+          "max": 0.1895578000039677,
+          "min": 0.026635200003511272
+        },
+        "acute_hazard": {
+          "count": 602,
+          "mean": 0.004014925913607928,
+          "p50": 0.003588700001273537,
+          "p95": 0.007603704995199222,
+          "p99": 0.009910566998660216,
+          "max": 0.020062700001290068,
+          "min": 0.0025433000046177767
+        },
+        "risk_state": {
+          "count": 602,
+          "mean": 2.649169442502231e-05,
+          "p50": 1.9899998733308166e-05,
+          "p95": 5.5585001246072334e-05,
+          "p99": 9.1495998276514e-05,
+          "max": 0.00019880000036209822,
+          "min": 1.1299998732283711e-05
+        },
+        "trigger_evaluation": {
+          "count": 602,
+          "mean": 9.77043195978036e-06,
+          "p50": 7.800001185387373e-06,
+          "p95": 2.029500174103304e-05,
+          "p99": 2.918699676229154e-05,
+          "max": 7.060000643832609e-05,
+          "min": 4.699999408330768e-06
+        },
+        "semantic_admission_submit": {
+          "count": 602,
+          "mean": 1.628006639203097e-05,
+          "p50": 2.2000021999701858e-06,
+          "p95": 5.199995939619839e-06,
+          "p99": 1.1081997217843325e-05,
+          "max": 0.0024316999988514,
+          "min": 1.3999961083754897e-06
+        }
+      }
+    }
+  }
+}

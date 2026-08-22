@@ -111,9 +111,11 @@ class EventReportSections(BaseModel):
     prose folded into `reasoning_summary` (developer's explicit choice).
     Nested Ollama-constrained schemas are an already-proven pattern in this
     codebase (`_ObservationListSchema` -> `_ObservationDraft` ->
-    `NormalizedBoundingBox`). Required only when `outcome == INCIDENT` (see
-    DecisionResult's own validator below) — WATCH keeps the simpler
-    existing `reasoning_summary` only."""
+    `NormalizedBoundingBox`). Required when `outcome == INCIDENT`; OPTIONAL
+    when `outcome == WATCH` (a WATCH decision MAY carry one when there is
+    meaningful evidence, per the Semantic Admission Control phase's WATCH/
+    structured_report contract fix — see DecisionResult's own validator
+    below and DECISIONS.md); always null for NO_INCIDENT/ABSTAIN."""
 
     event_summary: str = Field(max_length=_EVENT_REPORT_SECTION_MAX_LENGTH)
     observed_evidence: list[str] = Field(
@@ -257,11 +259,27 @@ class DecisionResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_structured_report_null_when_inappropriate(self) -> "DecisionResult":
-        # Required only for INCIDENT (WATCH keeps the simpler existing
-        # reasoning_summary only, per the developer's explicit choice).
+        # Semantic Admission Control phase — WATCH/structured_report
+        # contract fix (see DECISIONS.md): required for INCIDENT (a rich,
+        # mandatory report). OPTIONAL (either present or null) for WATCH —
+        # a real production failure showed Qwen3 legitimately generates a
+        # concise structured_report on WATCH when it has meaningful
+        # evidence but intentionally does not escalate to INCIDENT, and the
+        # OLD "must be null" rule here rejected that genuinely well-formed
+        # response, forcing a full retry (measured cost: 390.51s) before
+        # ultimately failing outright. A WATCH event is still an
+        # "investigated event" the session report surfaces (see
+        # session_report.py's own EVENTS-vs-INCIDENTS decision) and
+        # IncidentTimeline.tsx already renders structured_report whenever
+        # present, regardless of outcome — this was a genuine, unnecessary
+        # contract restriction, not a deliberate product boundary. Still
+        # forbidden (must stay null) for NO_INCIDENT/ABSTAIN, which carry
+        # no rich narrative at all.
         if self.outcome == DecisionOutcome.INCIDENT:
             if self.structured_report is None:
                 raise ValueError("structured_report is required when outcome=INCIDENT")
+        elif self.outcome == DecisionOutcome.WATCH:
+            pass  # optional either way — see rationale above
         elif self.structured_report is not None:
             raise ValueError(
                 f"structured_report must be null when outcome={self.outcome.value}"

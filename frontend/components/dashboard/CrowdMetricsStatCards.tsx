@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { RISK_STATE_COLORS } from "@/lib/riskColors";
 import type { CrowdMetricsStatFields } from "@/lib/types";
 
 // density.py's own confidence tiers: 1.0 (full KDE fit, the implicit
@@ -34,7 +35,7 @@ function StatCard({
   );
 }
 
-const CARD_LABELS = ["Density", "Pressure", "Congestion", "Flow"];
+const CARD_LABELS = ["Risk", "Density", "Pressure", "Congestion", "Flow"];
 
 export default function CrowdMetricsStatCards({
   current,
@@ -43,7 +44,7 @@ export default function CrowdMetricsStatCards({
 }) {
   if (!current) {
     return (
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {CARD_LABELS.map((label) => (
           <StatCard key={label} label={label}>
             <p className="mt-2 text-sm text-cs-muted">No data yet</p>
@@ -68,8 +69,19 @@ export default function CrowdMetricsStatCards({
   const congestionActive = current.congested_cell_fraction > 0;
   const flowActive = current.reverse_flow_cell_fraction > 0 || current.bottleneck_signal_present;
 
+  const riskColor = RISK_STATE_COLORS[current.risk_state];
+
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <StatCard label="Risk">
+        <p className="mt-2 text-2xl font-bold" style={{ color: riskColor }}>
+          {current.risk_score.toFixed(1)}
+        </p>
+        <p className="mt-1 text-xs" style={{ color: riskColor }}>
+          {current.risk_state} · 0-100
+        </p>
+      </StatCard>
+
       <StatCard label="Density" muted={densityLowConfidence}>
         <p
           className={`mt-2 text-2xl font-bold ${

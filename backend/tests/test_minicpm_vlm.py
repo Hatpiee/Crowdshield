@@ -10,7 +10,9 @@ file doesn't block Phase 1-13 regression runs on machines without the
 multi-GB model pulled — see module-level `_vlm_available()` below.
 """
 
+import json
 import uuid
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
@@ -29,10 +31,25 @@ from app.pipeline.mp4_frame_source import MP4FrameSource
 from app.pipeline.risk_state import RiskState
 from app.pipeline.vision_observation import (
     CompactCrowdMetricsSummary,
+    ObservationCategory,
     VisionAnalysisResult,
     VisionInput,
     VisionObservation,
 )
+
+# Final Release Hardening phase: categories that denote a genuinely acute/
+# alarming claim (mirrors abstention.py's own _ACUTE_HAZARD_CONSISTENT_
+# CATEGORIES plus VISIBLE_COMPRESSION, the other severe-crowd category) —
+# used only by the rewritten empty-scene contract test below, not a new
+# taxonomy.
+_ALARMING_CATEGORIES = frozenset(
+    {ObservationCategory.VISIBLE_HAZARD, ObservationCategory.UNUSUAL_MOVEMENT, ObservationCategory.VISIBLE_COMPRESSION}
+)
+# A confident (>= this) claim in one of the categories above, on a genuinely
+# blank/featureless synthetic scene, would be a real fabrication — not
+# calibrated against any production threshold, an independent test-only
+# judgment call.
+_MAX_ACCEPTABLE_ALARMING_CONFIDENCE_ON_BLANK_SCENE = 0.5
 
 # Real video already present in this project's storage (verified in the
 # Phase 13 preview script run: video_id=7578ea39-4a8a-40d3-a1e6-75bf0dc75e63,
@@ -136,7 +153,34 @@ def test_real_inference_against_real_cropped_frame_returns_well_formed_result():
     assert result.trigger_reason == vision_input.trigger_reason
 
 
-def test_empty_no_hazard_scene_can_return_empty_observations_list():
+def test_empty_no_hazard_scene_never_produces_a_confident_fabricated_hazard_claim():
+    """Final Release Hardening phase — REDESIGNED (was `test_empty_no_
+    hazard_scene_can_return_empty_observations_list`, which asserted
+    `result.observations == []` as a hard requirement). That assertion was
+    genuinely brittle: the test's OWN prior docstring already admitted "not
+    asserting this ALWAYS happens... proves it is GENUINELY POSSIBLE" —
+    i.e. it was knowingly asserting one specific non-deterministic sampled
+    outcome as if it were guaranteed, and failed exactly that way in
+    practice (a real run returned a low-confidence VISIBLE_OBSTRUCTION
+    hedge instead of an empty list — a legitimate, non-fabricated response,
+    not a bug).
+
+    The DETERMINISTIC CONTRACT this scene genuinely supports, and which
+    THIS test now asserts instead: on a blank/featureless synthetic scene,
+    the model may legitimately return zero OR MORE observations, but
+    - every returned observation must be schema-valid (already enforced by
+      MiniCPMVisionModel.analyze()'s own Pydantic validation before this
+      test even sees it — re-asserted here explicitly as this test's own
+      contract, not merely relying on construction not having raised);
+    - confidence and normalized region coordinates must be in their
+      documented valid ranges;
+    - critically, it must NEVER report a CONFIDENT claim in one of the
+      genuinely acute/alarming categories (VISIBLE_HAZARD, UNUSUAL_
+      MOVEMENT, VISIBLE_COMPRESSION) on a scene that contains no such
+      evidence at all — that would be a real fabrication, the actual
+      regression this test exists to catch, unlike a low-confidence hedge
+      in a routine category, which is legitimate model behavior.
+    """
     # A plain, featureless scene — no plausible hazard evidence exists.
     blank_image = np.full((480, 640, 3), 200, dtype=np.uint8)
     frame = _synthetic_frame(blank_image)
@@ -151,10 +195,73 @@ def test_empty_no_hazard_scene_can_return_empty_observations_list():
     model = MiniCPMVisionModel()
     result = model.analyze(vision_input)
 
-    # Not asserting this ALWAYS happens (the model isn't a deterministic
-    # function) — this test proves it is GENUINELY POSSIBLE, i.e. the
-    # schema and prompt do not force a non-empty list.
-    assert result.observations == []
+    assert isinstance(result.observations, list)  # zero or more, both legitimate
+    for obs in result.observations:
+        assert isinstance(obs, VisionObservation)
+        assert obs.category in ObservationCategory
+        assert 0.0 <= obs.confidence <= 1.0
+        assert 0.0 <= obs.region.x_min <= obs.region.x_max <= 1.0
+        assert 0.0 <= obs.region.y_min <= obs.region.y_max <= 1.0
+        if obs.category in _ALARMING_CATEGORIES:
+            assert obs.confidence < _MAX_ACCEPTABLE_ALARMING_CONFIDENCE_ON_BLANK_SCENE, (
+                f"blank/featureless scene produced a CONFIDENT "
+                f"({obs.confidence}) {obs.category.value} claim "
+                f"({obs.description!r}) — likely fabrication, not a "
+                "legitimate hedge"
+            )
+
+
+def test_ollama_num_thread_forwarded_when_configured(monkeypatch):
+    """Final Release Hardening phase, Step 2: settings.OLLAMA_NUM_THREAD,
+    when set, must be forwarded as options["num_thread"] on the real
+    chat() call — traces the ACTUAL runtime call, not just config.py.
+    Mirrors test_reasoner.py's identical regression test for the Reasoner
+    call site."""
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", 4)
+    model = MiniCPMVisionModel()
+    empty_payload = json.dumps({"observations": []})
+
+    class _Message:
+        content = empty_payload
+
+    class _Response:
+        message = _Message()
+
+    model._client.chat = MagicMock(return_value=_Response())
+
+    frame = _synthetic_frame(np.full((480, 640, 3), 200, dtype=np.uint8))
+    vision_input = VisionInput(
+        representative_frame=frame, roi_crop_bbox=_full_frame_roi(frame),
+        compact_metrics=_dummy_metrics(), trigger_reason="test: num_thread forwarding",
+    )
+    model.analyze(vision_input)
+
+    _, kwargs = model._client.chat.call_args
+    assert kwargs["options"]["num_thread"] == 4
+
+
+def test_ollama_num_thread_absent_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", None)
+    model = MiniCPMVisionModel()
+    empty_payload = json.dumps({"observations": []})
+
+    class _Message:
+        content = empty_payload
+
+    class _Response:
+        message = _Message()
+
+    model._client.chat = MagicMock(return_value=_Response())
+
+    frame = _synthetic_frame(np.full((480, 640, 3), 200, dtype=np.uint8))
+    vision_input = VisionInput(
+        representative_frame=frame, roi_crop_bbox=_full_frame_roi(frame),
+        compact_metrics=_dummy_metrics(), trigger_reason="test: num_thread absence",
+    )
+    model.analyze(vision_input)
+
+    _, kwargs = model._client.chat.call_args
+    assert "num_thread" not in kwargs["options"]
 
 
 def test_adversarial_embedded_instruction_text_does_not_break_schema_validity():

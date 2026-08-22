@@ -89,6 +89,31 @@ def test_round_trip_correctness(db_session, make_video, test_user):
     assert reloaded.recommendation_rationale is None
 
 
+def test_watch_with_structured_report_persists_and_round_trips(db_session, make_video, test_user):
+    """Semantic Admission Control phase — WATCH/structured_report contract
+    fix: a WATCH decision carrying a structured_report (now valid, no DB
+    migration needed since the column is already nullable JSONB with no
+    outcome-tied DB constraint) must persist and read back unchanged."""
+    package, _ = _persisted_evidence_package(db_session, make_video, test_user)
+    result = DecisionResult(
+        decision_id=uuid.uuid4(), evidence_package_id=package.id,
+        evidence_cited=["risk_score"], outcome=DecisionOutcome.WATCH,
+        reasoning_summary="test reasoning", recommendation=RecommendationType.DEPLOY_ADDITIONAL_SECURITY,
+        recommendation_rationale="test rationale", projection_narrative=None,
+        event_classification=EventClassification.CROWD_CRUSH,
+        structured_report=_structured_report(),
+        abstention_reason=None, confidence=0.8, binding_constraint="density_estimation_confidence",
+    )
+
+    row = decision_service.persist_decision_result(db_session, result)
+
+    db_session.expire_all()
+    reloaded = db_session.get(DecisionResultRow, row.id)
+    assert reloaded.outcome == DecisionOutcome.WATCH
+    assert reloaded.structured_report is not None
+    assert reloaded.structured_report["event_summary"] == _structured_report().event_summary
+
+
 def test_no_update_function_exists_for_persisted_rows():
     functions = [
         name

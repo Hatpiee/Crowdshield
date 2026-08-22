@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -8,13 +8,35 @@ export default function VideoPlayer({
   videoId,
   accessToken,
   onTimeUpdate,
+  seekRequest,
 }: {
   videoId: string;
   accessToken: string;
   onTimeUpdate: (seconds: number) => void;
+  // Final Intelligence phase (Phase G): a seek request from a sibling
+  // widget (timeline entry, event card, incident card). `nonce` is bumped
+  // on every request (even a repeat click on the same timestamp) so the
+  // effect below fires every time, not just on a changed `seconds` value —
+  // the video element itself has no ref exposed to siblings, this is the
+  // one deliberate imperative escape hatch, reusing the SAME lifted-state
+  // pattern (not Context, not a second time model) already established for
+  // playbackTime.
+  seekRequest?: { seconds: number; nonce: number } | null;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (seekRequest && videoRef.current) {
+      videoRef.current.currentTime = seekRequest.seconds;
+      videoRef.current.play().catch(() => {
+        // Autoplay can be blocked by the browser — the seek itself still
+        // took effect, so this is a benign no-op, not an error state.
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekRequest?.nonce]);
 
   // Gap 2: on mount, obtain a short-lived stream token via a normal
   // authenticated call, then set the <video> src to the streaming route
@@ -61,6 +83,7 @@ export default function VideoPlayer({
 
   return (
     <video
+      ref={videoRef}
       src={src}
       controls
       className="aspect-video w-full border border-cs-border bg-black"

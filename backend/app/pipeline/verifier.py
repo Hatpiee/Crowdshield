@@ -227,6 +227,18 @@ class Verifier:
         max_attempts = settings.VERIFIER_MAX_RETRIES + 1
         last_error: Exception | None = None
 
+        # Final CPU Stabilization phase: see minicpm_vlm.py's identical
+        # pattern and config.py's OLLAMA_NUM_THREAD docstring. Applied here
+        # too — Verifier calls run on the SAME llama-server.exe CPU
+        # resource as VLM/Reasoner calls; the Verifier's own timeout/
+        # contract is unchanged, only its thread-usage cap.
+        chat_options: dict = {
+            "temperature": settings.LLM_TEMPERATURE,
+            "num_predict": settings.VERIFIER_MAX_THINKING_TOKENS,
+        }
+        if settings.OLLAMA_NUM_THREAD is not None:
+            chat_options["num_thread"] = settings.OLLAMA_NUM_THREAD
+
         for attempt in range(1, max_attempts + 1):
             start = time.perf_counter()
             try:
@@ -237,10 +249,7 @@ class Verifier:
                         {"role": "user", "content": prompt},
                     ],
                     format=schema,
-                    options={
-                        "temperature": settings.LLM_TEMPERATURE,
-                        "num_predict": settings.VERIFIER_MAX_THINKING_TOKENS,
-                    },
+                    options=chat_options,
                     think=True,
                 )
             except _UNAVAILABLE_EXCEPTIONS as exc:

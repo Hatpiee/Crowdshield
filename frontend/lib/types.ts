@@ -16,13 +16,18 @@ export interface CrowdMetricsStatFields {
   reverse_flow_cell_fraction: number;
   bottleneck_signal_present: boolean;
   density_confidence: number;
+  // Final Intelligence phase: moved up from CrowdMetricsSnapshotItem —
+  // both the live timeseries snapshot AND an evidence package's
+  // crowd_metrics_summary already carry these (CompactCrowdMetricsSummary,
+  // backend/app/pipeline/vision_observation.py), so CrowdMetricsStatCards
+  // can render a Risk card in either context.
+  risk_score: number;
+  risk_state: string;
 }
 
 export interface CrowdMetricsSnapshotItem extends CrowdMetricsStatFields {
   frame_number: number;
   timestamp_seconds: number;
-  risk_score: number;
-  risk_state: string;
 }
 
 export type HeatmapType = "DENSITY" | "PRESSURE" | "FLOW_CONGESTION" | "RISK" | "PREDICTIVE";

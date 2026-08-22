@@ -124,6 +124,57 @@ def test_deterministic_short_circuit_never_calls_llm():
     verifier._client.chat.assert_not_called()
 
 
+def _fake_verification_response() -> MagicMock:
+    import json
+
+    payload = {
+        "reasoning_consistency_ok": True, "reasoning_consistency_note": "ok",
+        "contradiction_handling_ok": True, "contradiction_handling_note": "ok",
+        "recommendation_consistency_ok": True, "recommendation_consistency_note": "ok",
+        "unsupported_claims_found": False, "unsupported_claims_note": "ok",
+        "overall_verdict": "CONFIRMED",
+    }
+
+    class _Message:
+        content = json.dumps(payload)
+
+    class _Response:
+        message = _Message()
+
+    return _Response()
+
+
+def test_ollama_num_thread_forwarded_when_configured(monkeypatch):
+    """Final Release Hardening phase, Step 2: settings.OLLAMA_NUM_THREAD,
+    when set, must be forwarded as options["num_thread"] on the real
+    chat() call — traces the ACTUAL runtime call, not just config.py.
+    Mirrors the identical regression tests in test_reasoner.py/
+    test_minicpm_vlm.py for the other two real call sites."""
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", 4)
+    verifier = Verifier()
+    verifier._client.chat = MagicMock(return_value=_fake_verification_response())
+
+    package = _real_evidence_package()
+    decision = _real_well_grounded_decision()
+    verifier.verify(decision, package)
+
+    _, kwargs = verifier._client.chat.call_args
+    assert kwargs["options"]["num_thread"] == 4
+
+
+def test_ollama_num_thread_absent_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", None)
+    verifier = Verifier()
+    verifier._client.chat = MagicMock(return_value=_fake_verification_response())
+
+    package = _real_evidence_package()
+    decision = _real_well_grounded_decision()
+    verifier.verify(decision, package)
+
+    _, kwargs = verifier._client.chat.call_args
+    assert "num_thread" not in kwargs["options"]
+
+
 def test_llm_verification_unavailable_raises(monkeypatch):
     monkeypatch.setattr(settings, "OLLAMA_BASE_URL", "http://localhost:1")
     monkeypatch.setattr(settings, "VERIFIER_REQUEST_TIMEOUT_SECONDS", 3.0)

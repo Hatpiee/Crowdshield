@@ -1,0 +1,42 @@
+{
+  "package_id": "05d9ce6a-8d1d-486a-9397-9d6cdae8b4c8",
+  "frame_number": 566,
+  "timestamp_seconds": 18.866666666666667,
+  "trigger_reason": "acute hazard signals corroborated: motion_energy, flow_divergence",
+  "crowd_metrics_summary": {
+    "risk_score": 15.218936662767385,
+    "risk_state": "NORMAL",
+    "max_density": 0.0,
+    "max_pressure": 0.0,
+    "density_confidence": 1.0,
+    "congested_cell_fraction": 0.0,
+    "bottleneck_signal_present": true,
+    "pressure_units_disclaimer": "PIXEL-SPACE UNITS, NOT METERS: this Pressure grid is density (people/cell) x velocity_variance (pixels^2/second^2). The literature's 0.02/0.04 s^-2 thresholds are calibrated in people/m^2 and m/s and are NOT directly comparable to these values without a camera calibration this project does not have. See DECISIONS.md.",
+    "reverse_flow_cell_fraction": 0.0
+  },
+  "vision_observations_present": false,
+  "confidence": 1.0,
+  "binding_constraint": "density_estimation_confidence",
+  "complete": false,
+  "missing_evidence": [
+    "vision_observations"
+  ],
+  "contradictions": [],
+  "acute_hazard_signal_snapshot": {
+    "z_scores": {
+      "scene_change": 1.030496869894865,
+      "motion_energy": 3.456574071050087,
+      "flow_divergence": 4.64039765369927,
+      "detection_count_delta": -0.4723357944482617
+    },
+    "corroborating_signals": [
+      "motion_energy",
+      "flow_divergence"
+    ]
+  },
+  "event_window": {
+    "peak_timestamp_seconds": 18.866666666666667,
+    "onset_window_start_seconds": 16.866666666666667,
+    "context_frame_timestamp_seconds": 16.866666666666667
+  }
+}

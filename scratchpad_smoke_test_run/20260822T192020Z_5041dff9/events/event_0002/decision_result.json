@@ -1,0 +1,10 @@
+{
+  "decision_id": "764575b3-b06e-478d-a83b-ce371d46c023",
+  "outcome": "ABSTAIN",
+  "reasoning_summary": "Abstained without LLM invocation: evidence is materially incomplete: missing=['vision_observations']",
+  "recommendation": null,
+  "event_classification": null,
+  "structured_report": null,
+  "abstention_reason": "evidence is materially incomplete: missing=['vision_observations']",
+  "confidence": 1.0
+}

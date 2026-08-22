@@ -161,6 +161,129 @@ def test_missing_event_classification_on_incident_defaults_to_unknown_without_re
     reasoner._client.chat.assert_called_once()
 
 
+def _watch_payload(with_structured_report: bool) -> dict:
+    payload = {
+        "evidence_cited": ["risk_score"],
+        "outcome": "WATCH",
+        "reasoning_summary": "Elevated pressure observed but not yet incident-worthy.",
+        "recommendation": "DEPLOY_ADDITIONAL_SECURITY",
+        "recommendation_rationale": "Precautionary staging given rising pressure.",
+        "projection_narrative": None,
+        "event_classification": "CROWD_CRUSH",
+        "structured_report": None,
+    }
+    if with_structured_report:
+        payload["structured_report"] = {
+            "event_summary": "Pressure rising near the barrier, not yet critical.",
+            "observed_evidence": ["rising crowd pressure", "partial congestion"],
+            "behavioral_analysis": "Crowd movement slowed but remains orderly.",
+            "spatial_analysis": "Localized to one region near the barrier.",
+            "temporal_analysis": "Gradual onset over the last several frames.",
+            "crowd_risk_context": "risk_score=55.0 (ELEVATED) is consistent with the observation.",
+        }
+    return payload
+
+
+def test_watch_with_structured_report_is_valid_no_retry():
+    """Semantic Admission Control phase — WATCH/structured_report contract
+    fix regression: the real production defect was a WATCH decision that
+    legitimately carried a structured_report, which the OLD validator
+    rejected (forcing a retry that burned 390.51s before ultimately
+    failing). A WATCH decision with a well-formed structured_report must
+    now validate on the FIRST attempt, no retry."""
+    reasoner = Reasoner()
+    reasoner._client.chat = MagicMock(
+        return_value=_fake_chat_response(_watch_payload(with_structured_report=True))
+    )
+
+    package = _package(
+        risk_score=55.0, risk_state=RiskState.ELEVATED, vision_observations=[_hazard_observation()],
+    )
+    result = reasoner.reason(package)
+
+    assert result.outcome == DecisionOutcome.WATCH
+    assert result.structured_report is not None
+    assert result.structured_report.event_summary == (
+        _watch_payload(with_structured_report=True)["structured_report"]["event_summary"]
+    )
+    reasoner._client.chat.assert_called_once()
+
+
+def test_watch_without_structured_report_is_still_valid_no_retry():
+    """WATCH with structured_report left null (the common/original path)
+    must remain valid — structured_report is optional, not required, for
+    WATCH."""
+    reasoner = Reasoner()
+    reasoner._client.chat = MagicMock(
+        return_value=_fake_chat_response(_watch_payload(with_structured_report=False))
+    )
+
+    package = _package(
+        risk_score=55.0, risk_state=RiskState.ELEVATED, vision_observations=[_hazard_observation()],
+    )
+    result = reasoner.reason(package)
+
+    assert result.outcome == DecisionOutcome.WATCH
+    assert result.structured_report is None
+    reasoner._client.chat.assert_called_once()
+
+
+def test_incident_without_structured_report_still_fails_validation():
+    """The contract relaxation applies ONLY to WATCH — INCIDENT must still
+    REQUIRE a structured_report; a model response omitting it on INCIDENT
+    is a genuine validation failure, not silently accepted."""
+    reasoner = Reasoner()
+    bad_payload = _incident_payload(event_classification="CROWD_CRUSH")
+    bad_payload["structured_report"] = None
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(bad_payload))
+    # Bound retries to keep this test fast — every attempt will fail the
+    # same way (structured_report stays None from the same mocked response).
+    from app.pipeline import reasoner as reasoner_module
+    from unittest.mock import patch
+
+    with patch.object(reasoner_module.settings, "LLM_MAX_RETRIES", 0):
+        from app.pipeline.reasoner import LLMResponseValidationError
+
+        with pytest.raises(LLMResponseValidationError):
+            reasoner.reason(
+                _package(
+                    risk_score=95.0, risk_state=RiskState.CRITICAL,
+                    vision_observations=[_hazard_observation()],
+                )
+            )
+
+
+def test_no_incident_with_structured_report_still_fails_validation():
+    """NO_INCIDENT must still FORBID a structured_report — the relaxation
+    is WATCH-only, not a blanket "always optional" change."""
+    reasoner = Reasoner()
+    bad_payload = {
+        "evidence_cited": ["risk_score"],
+        "outcome": "NO_INCIDENT",
+        "reasoning_summary": "Nothing of note observed.",
+        "recommendation": None,
+        "recommendation_rationale": None,
+        "projection_narrative": None,
+        "event_classification": None,
+        "structured_report": {
+            "event_summary": "Should not be here.",
+            "observed_evidence": ["x"],
+            "behavioral_analysis": "x",
+            "spatial_analysis": "x",
+            "temporal_analysis": "x",
+            "crowd_risk_context": "x",
+        },
+    }
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(bad_payload))
+    from unittest.mock import patch
+
+    with patch.object(settings, "LLM_MAX_RETRIES", 0):
+        from app.pipeline.reasoner import LLMResponseValidationError
+
+        with pytest.raises(LLMResponseValidationError):
+            reasoner.reason(_package(risk_score=10.0, risk_state=RiskState.NORMAL))
+
+
 def test_event_classification_and_structured_report_propagate_from_model_output():
     """Regression guard: when the model DOES supply event_classification, it
     must actually reach the persisted DecisionResult unchanged — proves the
@@ -179,6 +302,32 @@ def test_event_classification_and_structured_report_propagate_from_model_output(
     assert result.structured_report.event_summary == payload["structured_report"]["event_summary"]
     assert result.structured_report.observed_evidence == payload["structured_report"]["observed_evidence"]
     reasoner._client.chat.assert_called_once()
+
+
+def test_ollama_num_thread_forwarded_when_configured(monkeypatch):
+    """Final CPU Stabilization phase: settings.OLLAMA_NUM_THREAD, when set,
+    must be forwarded as options["num_thread"] on the real chat() call —
+    a VERIFIED real field on the installed ollama client's Options model
+    (see config.py's own docstring), not an invented parameter."""
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", 8)
+    reasoner = Reasoner()
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(_watch_payload(with_structured_report=False)))
+
+    reasoner.reason(_package(risk_score=55.0, risk_state=RiskState.ELEVATED))
+
+    _, kwargs = reasoner._client.chat.call_args
+    assert kwargs["options"]["num_thread"] == 8
+
+
+def test_ollama_num_thread_absent_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(settings, "OLLAMA_NUM_THREAD", None)
+    reasoner = Reasoner()
+    reasoner._client.chat = MagicMock(return_value=_fake_chat_response(_watch_payload(with_structured_report=False)))
+
+    reasoner.reason(_package(risk_score=55.0, risk_state=RiskState.ELEVATED))
+
+    _, kwargs = reasoner._client.chat.call_args
+    assert "num_thread" not in kwargs["options"]
 
 
 def test_llm_unavailable_raises_not_silent_fabrication(monkeypatch):
@@ -243,6 +392,35 @@ def test_real_inference_without_projection_snapshot_narrative_is_null():
     result = reasoner.reason(package)
 
     assert result.projection_narrative is None
+
+
+def test_real_inference_watch_case_never_raises_regardless_of_structured_report():
+    """Semantic Admission Control phase — real-inference regression for the
+    actual production defect (see DECISIONS.md): a real ACUTE_HAZARD-style
+    WATCH decision previously failed validation and burned a 390.51s retry
+    loop whenever Qwen3 chose to attach a structured_report to a WATCH
+    outcome. This evidence shape (elevated-but-not-critical risk, one
+    hazard-consistent observation, ACUTE_HAZARD-flavored trigger_reason) is
+    designed to plausibly elicit WATCH, matching the real failure's
+    conditions. The model's own choice of whether to attach a
+    structured_report is NOT forced (non-deterministic) — the fix is
+    proven by this call completing without LLMResponseValidationError no
+    matter which way the model goes, not by asserting the outcome exactly."""
+    reasoner = Reasoner()
+    package = _package(
+        risk_score=55.0, risk_state=RiskState.ELEVATED,
+        vision_observations=[_hazard_observation()], confidence=0.85,
+        trigger_reason="acute hazard signals corroborated: motion_energy, scene_change",
+    )
+
+    result = reasoner.reason(package)  # must not raise LLMResponseValidationError
+
+    assert isinstance(result, DecisionResult)
+    if result.outcome == DecisionOutcome.WATCH:
+        # Whatever the model chose, it is a VALID DecisionResult already
+        # (construction would have raised otherwise) — structured_report is
+        # either a well-formed report or None, both legitimate for WATCH.
+        assert result.structured_report is None or result.structured_report.event_summary
 
 
 def test_real_inference_crisis_case_yields_actionable_outcome_with_recommendation():

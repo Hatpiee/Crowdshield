@@ -85,7 +85,10 @@ export default function IncidentsList({
       </p>
 
       {incidents.length === 0 ? (
-        <p className="text-sm text-cs-muted">No incidents for this session.</p>
+        <p className="text-sm text-cs-muted">
+          No confirmed incidents for this session. See the Analysis Report
+          above for investigated events and why they did or didn&apos;t escalate.
+        </p>
       ) : (
         <ul className="flex flex-col gap-3">
           {incidents.map((incident) => {
